@@ -32,14 +32,14 @@ def mpi_factory(env: 'Environment', for_machine: 'MachineChoice',
                 kwargs: T.Dict[str, T.Any], methods: T.List[DependencyMethods]) -> T.List['DependencyType']:
     language = kwargs.get('language', 'c')
     if language not in {'c', 'cpp', 'fortran'}:
-        # OpenMPI doesn't work without any other languages
+        # OpenMPI and MPICH don't work without any other languages
         return []
 
     candidates = []
     compiler = detect_compiler('mpi', env, for_machine, language)
     compiler_is_intel = compiler.get_id() in {'intel', 'intel-cl'}
 
-    # Only OpenMPI has pkg-config, and it doesn't work with the intel compilers
+    # OpenMPI and MPICH have pkg-config, and it doesn't work with the intel compilers
     if DependencyMethods.PKGCONFIG in methods and not compiler_is_intel:
         pkg_name = None
         if language == 'c':
@@ -50,6 +50,8 @@ def mpi_factory(env: 'Environment', for_machine: 'MachineChoice',
             pkg_name = 'ompi-fort'
         candidates.append(functools.partial(
             PkgConfigDependency, pkg_name, env, kwargs, language=language))
+        candidates.append(functools.partial(
+            PkgConfigDependency, "mpich", env, kwargs, language=language))
 
     if DependencyMethods.CONFIG_TOOL in methods:
         nwargs = kwargs.copy()
