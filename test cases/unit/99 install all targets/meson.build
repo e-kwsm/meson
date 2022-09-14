@@ -36,11 +36,21 @@ static_library('static', 'lib.c',
 executable('app', 'main.c',
   install: true,
 )
+executable('app-otherdir', 'main.c',
+  install: true,
+  install_dir: 'otherbin',
+)
 shared_library('shared', 'lib.c',
   install: true,
 )
 both_libraries('both', 'lib.c',
   install: true,
+)
+
+# Unversioned .so file should have 'devel' tag, others should have 'runtime' tag
+shared_library('versioned_shared', 'lib.c',
+  install: true,
+  version: '1.2.3',
 )
 
 # Those files should have custom tag

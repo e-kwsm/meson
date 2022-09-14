@@ -20,10 +20,10 @@ from collections import OrderedDict
 from mesonbuild import mesonlib
 from mesonbuild import mlog, build
 from mesonbuild.coredata import MesonException
-from . import ModuleReturnValue
+from . import ModuleReturnValue, ModuleInfo
 from . import ExtensionModule
 from ..dependencies import Dependency, InternalDependency
-from ..interpreterbase import FeatureNew, InvalidArguments, noPosargs, noKwargs
+from ..interpreterbase import InvalidArguments, noPosargs, noKwargs, typed_pos_args
 from ..interpreter import CustomTargetHolder
 from ..programs import ExternalProgram
 
@@ -38,6 +38,7 @@ MIN_HOTDOC_VERSION = '0.8.100'
 
 
 class HotdocTargetBuilder:
+
     def __init__(self, name, state, hotdoc, interpreter, kwargs):
         self.hotdoc = hotdoc
         self.build_by_default = kwargs.pop('build_by_default', False)
@@ -176,9 +177,8 @@ class HotdocTargetBuilder:
 
         value, _ = self.get_value([list, str], 'gi_c_source_roots', default=[], force_list=True)
         value.extend([
-            os.path.join(self.state.environment.get_source_dir(),
-                         self.interpreter.subproject_dir, self.state.subproject),
-            os.path.join(self.state.environment.get_build_dir(), self.interpreter.subproject_dir, self.state.subproject)
+            os.path.join(self.sourcedir, self.state.root_subdir),
+            os.path.join(self.builddir, self.state.root_subdir)
         ])
 
         self.cmd += ['--gi-c-source-roots'] + value
@@ -338,6 +338,7 @@ class HotdocTargetBuilder:
         target = HotdocTarget(fullname,
                               subdir=self.subdir,
                               subproject=self.state.subproject,
+                              environment=self.state.environment,
                               hotdoc_conf=mesonlib.File.from_built_file(
                                   self.subdir, hotdoc_config_name),
                               extra_extension_paths=self._extra_extension_paths,
@@ -379,8 +380,8 @@ class HotdocTargetHolder(CustomTargetHolder):
 
 class HotdocTarget(build.CustomTarget):
     def __init__(self, name, subdir, subproject, hotdoc_conf, extra_extension_paths, extra_assets,
-                 subprojects, **kwargs):
-        super().__init__(name, subdir, subproject, **kwargs, absolute_paths=True)
+                 subprojects, environment, **kwargs):
+        super().__init__(name, subdir, subproject, environment, **kwargs, absolute_paths=True)
         self.hotdoc_conf = hotdoc_conf
         self.extra_extension_paths = extra_extension_paths
         self.extra_assets = extra_assets
@@ -395,7 +396,9 @@ class HotdocTarget(build.CustomTarget):
 
 
 class HotDocModule(ExtensionModule):
-    @FeatureNew('Hotdoc Module', '0.48.0')
+
+    INFO = ModuleInfo('hotdoc', '0.48.0')
+
     def __init__(self, interpreter):
         super().__init__(interpreter)
         self.hotdoc = ExternalProgram('hotdoc')
@@ -413,14 +416,12 @@ class HotDocModule(ExtensionModule):
         })
 
     @noKwargs
+    @typed_pos_args('hotdoc.has_extensions', varargs=str, min_varargs=1)
     def has_extensions(self, state, args, kwargs):
-        return self.hotdoc.run_hotdoc([f'--has-extension={extension}' for extension in args]) == 0
+        return self.hotdoc.run_hotdoc([f'--has-extension={extension}' for extension in args[0]]) == 0
 
+    @typed_pos_args('hotdoc.generate_doc', str)
     def generate_doc(self, state, args, kwargs):
-        if len(args) != 1:
-            raise MesonException('One positional argument is'
-                                 ' required for the project name.')
-
         project_name = args[0]
         builder = HotdocTargetBuilder(project_name, state, self.hotdoc, self.interpreter, kwargs)
         target, install_script = builder.make_targets()

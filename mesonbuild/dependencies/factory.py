@@ -12,13 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import functools
 import typing as T
 
-from ..mesonlib import MachineChoice
 from .base import DependencyException, DependencyMethods
-from .base import ExternalDependency
 from .base import process_method_kw
 from .base import BuiltinDependency, SystemDependency
 from .cmake import CMakeDependency
@@ -26,8 +25,10 @@ from .framework import ExtraFrameworkDependency
 from .pkgconfig import PkgConfigDependency
 
 if T.TYPE_CHECKING:
-    from ..environment import Environment
+    from .base import ExternalDependency
     from .configtool import ConfigToolDependency
+    from ..environment import Environment
+    from ..mesonlib import MachineChoice
 
     DependencyGenerator = T.Callable[[], ExternalDependency]
     FactoryFunc = T.Callable[
@@ -99,15 +100,15 @@ class DependencyFactory:
         ] = {
             # Just attach the correct name right now, either the generic name
             # or the method specific name.
-            DependencyMethods.EXTRAFRAMEWORK: lambda env, kwargs: framework_class(framework_name or name, env, kwargs),
-            DependencyMethods.PKGCONFIG:      lambda env, kwargs: pkgconfig_class(pkgconfig_name or name, env, kwargs),
-            DependencyMethods.CMAKE:          lambda env, kwargs: cmake_class(cmake_name or name, env, kwargs),
-            DependencyMethods.SYSTEM:         lambda env, kwargs: system_class(name, env, kwargs),
-            DependencyMethods.BUILTIN:        lambda env, kwargs: builtin_class(name, env, kwargs),
-            DependencyMethods.CONFIG_TOOL:    None,
+            DependencyMethods.EXTRAFRAMEWORK: functools.partial(framework_class, framework_name or name),
+            DependencyMethods.PKGCONFIG: functools.partial(pkgconfig_class, pkgconfig_name or name),
+            DependencyMethods.CMAKE: functools.partial(cmake_class, cmake_name or name),
+            DependencyMethods.SYSTEM: functools.partial(system_class, name),
+            DependencyMethods.BUILTIN: functools.partial(builtin_class, name),
+            DependencyMethods.CONFIG_TOOL: None,
         }
         if configtool_class is not None:
-            self.classes[DependencyMethods.CONFIG_TOOL] = lambda env, kwargs: configtool_class(name, env, kwargs)
+            self.classes[DependencyMethods.CONFIG_TOOL] = functools.partial(configtool_class, name)
 
     @staticmethod
     def _process_method(method: DependencyMethods, env: 'Environment', for_machine: MachineChoice) -> bool:

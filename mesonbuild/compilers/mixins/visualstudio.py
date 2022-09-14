@@ -299,7 +299,7 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
         with self._build_wrapper(code, env, extra_args=args, mode=mode) as p:
             if p.returncode != 0:
                 return False, p.cached
-            return not(warning_text in p.stderr or warning_text in p.stdout), p.cached
+            return not (warning_text in p.stderr or warning_text in p.stdout), p.cached
 
     def get_compile_debugfile_args(self, rel_obj: str, pch: bool = False) -> T.List[str]:
         pdbarr = rel_obj.split('.')[:-1]
@@ -383,6 +383,23 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
     def get_argument_syntax(self) -> str:
         return 'msvc'
 
+    def symbols_have_underscore_prefix(self, env: 'Environment') -> bool:
+        '''
+        Check if the compiler prefixes an underscore to global C symbols.
+
+        This overrides the Clike method, as for MSVC checking the
+        underscore prefix based on the compiler define never works,
+        so do not even try.
+        '''
+        # Try to consult a hardcoded list of cases we know
+        # absolutely have an underscore prefix
+        result = self._symbols_have_underscore_prefix_list(env)
+        if result is not None:
+            return result
+
+        # As a last resort, try search in a compiled binary
+        return self._symbols_have_underscore_prefix_searchbin(env)
+
 
 class MSVCCompiler(VisualStudioLikeCompiler):
 
@@ -428,7 +445,7 @@ class ClangClCompiler(VisualStudioLikeCompiler):
 
     def has_arguments(self, args: T.List[str], env: 'Environment', code: str, mode: str) -> T.Tuple[bool, bool]:
         if mode != 'link':
-            args = args + ['-Werror=unknown-argument']
+            args = args + ['-Werror=unknown-argument', '-Werror=unknown-warning-option']
         return super().has_arguments(args, env, code, mode)
 
     def get_toolset_version(self) -> T.Optional[str]:

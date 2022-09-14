@@ -24,11 +24,13 @@ parser.add_argument('command')
 parser.add_argument('--build-dir', default='')
 parser.add_argument('-i', '--input', default='')
 parser.add_argument('-o', '--output', default='')
+parser.add_argument('--itstool', default='itstool')
 parser.add_argument('--its', action='append', default=[])
 parser.add_argument('mo_files', nargs='+')
 
 
-def run_join(build_dir: str, its_files: T.List[str], mo_files: T.List[str], in_fname: str, out_fname: str) -> int:
+def run_join(build_dir: str, itstool: str, its_files: T.List[str], mo_files: T.List[str],
+             in_fname: str, out_fname: str) -> int:
     if not mo_files:
         print('No mo files specified to use for translation.')
         return 1
@@ -38,10 +40,10 @@ def run_join(build_dir: str, its_files: T.List[str], mo_files: T.List[str], in_f
         locale_mo_files = []
         for mo_file in mo_files:
             if not os.path.exists(mo_file):
-                print('Could not find mo file {}'.format(mo_file))
+                print(f'Could not find mo file {mo_file}')
                 return 1
             if not mo_file.endswith('.mo'):
-                print('File is not a mo file: {}'.format(mo_file))
+                print(f'File is not a mo file: {mo_file}')
                 return 1
             # determine locale of this mo file
             parts = mo_file.partition('LC_MESSAGES')
@@ -53,7 +55,7 @@ def run_join(build_dir: str, its_files: T.List[str], mo_files: T.List[str], in_f
             shutil.copy(mo_file, tmp_mo_fname)
             locale_mo_files.append(tmp_mo_fname)
 
-        cmd = ['itstool']
+        cmd = [itstool]
         if its_files:
             for fname in its_files:
                 cmd.extend(['-i', fname])
@@ -73,6 +75,7 @@ def run(args: T.List[str]) -> int:
 
     if command == 'join':
         return run_join(build_dir,
+                        options.itstool,
                         options.its,
                         options.mo_files,
                         options.input,

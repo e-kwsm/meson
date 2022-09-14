@@ -1,4 +1,4 @@
-# Copyright 2012-2017 The Meson development team
+# Copyright 2012-2022 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,32 +11,39 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import os.path
 import re
 import subprocess
 import typing as T
 
-from ..mesonlib import (
-    EnvironmentException, MachineChoice, version_compare, OptionKey, is_windows
-)
-
+from .. import mesonlib
+from .. import mlog
 from ..arglist import CompilerArgs
 from ..linkers import RSPFileSyntax
+from ..mesonlib import (
+    EnvironmentException, version_compare, OptionKey, is_windows
+)
+
+from . import compilers
 from .compilers import (
     d_dmd_buildtype_args,
     d_gdc_buildtype_args,
     d_ldc_buildtype_args,
     clike_debug_args,
     Compiler,
+    CompileCheckMode,
 )
 from .mixins.gnu import GnuCompiler
 
 if T.TYPE_CHECKING:
+    from ..dependencies import Dependency
     from ..programs import ExternalProgram
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker
+    from ..mesonlib import MachineChoice
 
     CompilerMixinBase = Compiler
 else:
@@ -276,7 +283,8 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
         return super().build_rpath_args(
             env, build_dir, from_dir, rpath_paths, build_rpath, install_rpath)
 
-    def _translate_args_to_nongnu(self, args: T.List[str]) -> T.List[str]:
+    @classmethod
+    def _translate_args_to_nongnu(cls, args: T.List[str], info: MachineInfo, link_id: str) -> T.List[str]:
         # Translate common arguments to flags the LDC/DMD compilers
         # can understand.
         # The flags might have been added by pkg-config files,
@@ -286,15 +294,15 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
         # see the comment in the "-L" section
         link_expect_arg = False
         link_flags_with_arg = [
-            '-rpath', '-soname', '-compatibility_version', '-current_version',
+            '-rpath', '-rpath-link', '-soname', '-compatibility_version', '-current_version',
         ]
         for arg in args:
             # Translate OS specific arguments first.
             osargs = []  # type: T.List[str]
-            if self.info.is_windows():
-                osargs = self.translate_arg_to_windows(arg)
-            elif self.info.is_darwin():
-                osargs = self._translate_arg_to_osx(arg)
+            if info.is_windows():
+                osargs = cls.translate_arg_to_windows(arg)
+            elif info.is_darwin():
+                osargs = cls._translate_arg_to_osx(arg)
             if osargs:
                 dcargs.extend(osargs)
                 continue
@@ -379,7 +387,7 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                     continue
 
                 # linker flag such as -L=/DEBUG must pass through
-                if self.linker.id == 'link' and self.info.is_windows() and suffix.startswith('/'):
+                if info.is_windows() and link_id == 'link' and suffix.startswith('/'):
                     dcargs.append(arg)
                     continue
 
@@ -432,6 +440,10 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
         if arg.startswith('-install_name'):
             args.append('-L=' + arg)
         return args
+
+    @classmethod
+    def _unix_args_to_native(cls, args: T.List[str], info: MachineInfo, link_id: str = '') -> T.List[str]:
+        return cls._translate_args_to_nongnu(args, info, link_id)
 
     def get_debug_args(self, is_debug: bool) -> T.List[str]:
         ddebug_args = []
@@ -678,6 +690,98 @@ class DCompiler(Compiler):
     def get_crt_link_args(self, crt_val: str, buildtype: str) -> T.List[str]:
         return []
 
+    def _get_compile_extra_args(self, extra_args: T.Union[T.List[str], T.Callable[[CompileCheckMode], T.List[str]], None] = None) -> T.List[str]:
+        args = self._get_target_arch_args()
+        if extra_args:
+            if callable(extra_args):
+                extra_args = extra_args(CompileCheckMode.COMPILE)
+            if isinstance(extra_args, list):
+                args.extend(extra_args)
+            elif isinstance(extra_args, str):
+                args.append(extra_args)
+        return args
+
+    def run(self, code: 'mesonlib.FileOrString', env: 'Environment', *,
+            extra_args: T.Union[T.List[str], T.Callable[[CompileCheckMode], T.List[str]], None] = None,
+            dependencies: T.Optional[T.List['Dependency']] = None) -> compilers.RunResult:
+        need_exe_wrapper = env.need_exe_wrapper(self.for_machine)
+        if need_exe_wrapper and self.exe_wrapper is None:
+            raise compilers.CrossNoRunException('Can not run test applications in this cross environment.')
+        extra_args = self._get_compile_extra_args(extra_args)
+        with self._build_wrapper(code, env, extra_args, dependencies, mode='link', want_output=True) as p:
+            if p.returncode != 0:
+                mlog.debug(f'Could not compile test file {p.input_name}: {p.returncode}\n')
+                return compilers.RunResult(False)
+            if need_exe_wrapper:
+                cmdlist = self.exe_wrapper.get_command() + [p.output_name]
+            else:
+                cmdlist = [p.output_name]
+            try:
+                pe, so, se = mesonlib.Popen_safe(cmdlist)
+            except Exception as e:
+                mlog.debug(f'Could not run: {cmdlist} (error: {e})\n')
+                return compilers.RunResult(False)
+
+        mlog.debug('Program stdout:\n')
+        mlog.debug(so)
+        mlog.debug('Program stderr:\n')
+        mlog.debug(se)
+        return compilers.RunResult(True, pe.returncode, so, se)
+
+    def sizeof(self, typename: str, prefix: str, env: 'Environment', *,
+               extra_args: T.Union[None, T.List[str], T.Callable[[CompileCheckMode], T.List[str]]] = None,
+               dependencies: T.Optional[T.List['Dependency']] = None) -> int:
+        if extra_args is None:
+            extra_args = []
+        t = f'''
+        import std.stdio : writeln;
+        {prefix}
+        void main() {{
+            writeln(({typename}).sizeof);
+        }}
+        '''
+        res = self.run(t, env, extra_args=extra_args,
+                       dependencies=dependencies)
+        if not res.compiled:
+            return -1
+        if res.returncode != 0:
+            raise mesonlib.EnvironmentException('Could not run sizeof test binary.')
+        return int(res.stdout)
+
+    def alignment(self, typename: str, prefix: str, env: 'Environment', *,
+                  extra_args: T.Optional[T.List[str]] = None,
+                  dependencies: T.Optional[T.List['Dependency']] = None) -> int:
+        if extra_args is None:
+            extra_args = []
+        t = f'''
+        import std.stdio : writeln;
+        {prefix}
+        void main() {{
+            writeln(({typename}).alignof);
+        }}
+        '''
+        res = self.run(t, env, extra_args=extra_args,
+                       dependencies=dependencies)
+        if not res.compiled:
+            raise mesonlib.EnvironmentException('Could not compile alignment test.')
+        if res.returncode != 0:
+            raise mesonlib.EnvironmentException('Could not run alignment test binary.')
+        align = int(res.stdout)
+        if align == 0:
+            raise mesonlib.EnvironmentException(f'Could not determine alignment of {typename}. Sorry. You might want to file a bug.')
+        return align
+
+    def has_header(self, hname: str, prefix: str, env: 'Environment', *,
+                   extra_args: T.Union[None, T.List[str], T.Callable[['CompileCheckMode'], T.List[str]]] = None,
+                   dependencies: T.Optional[T.List['Dependency']] = None,
+                   disable_cache: bool = False) -> T.Tuple[bool, bool]:
+
+        extra_args = self._get_compile_extra_args(extra_args)
+        code = f'''{prefix}
+        import {hname};
+        '''
+        return self.compiles(code, env, extra_args=extra_args,
+                             dependencies=dependencies, mode='compile', disable_cache=disable_cache)
 
 class GnuDCompiler(GnuCompiler, DCompiler):
 
@@ -800,13 +904,13 @@ class LLVMDCompiler(DmdLikeCompilerMixin, DCompiler):
         return self._get_crt_args(crt_val, buildtype)
 
     def unix_args_to_native(self, args: T.List[str]) -> T.List[str]:
-        return self._translate_args_to_nongnu(args)
+        return self._unix_args_to_native(args, self.info, self.linker.id)
 
     def get_optimization_args(self, optimization_level: str) -> T.List[str]:
         return ldc_optimization_args[optimization_level]
 
     @classmethod
-    def use_linker_args(cls, linker: str) -> T.List[str]:
+    def use_linker_args(cls, linker: str, version: str) -> T.List[str]:
         return [f'-linker={linker}']
 
     def get_linker_always_args(self) -> T.List[str]:
@@ -889,7 +993,7 @@ class DmdDCompiler(DmdLikeCompilerMixin, DCompiler):
         return self._get_crt_args(crt_val, buildtype)
 
     def unix_args_to_native(self, args: T.List[str]) -> T.List[str]:
-        return self._translate_args_to_nongnu(args)
+        return self._unix_args_to_native(args, self.info, self.linker.id)
 
     def get_optimization_args(self, optimization_level: str) -> T.List[str]:
         return dmd_optimization_args[optimization_level]

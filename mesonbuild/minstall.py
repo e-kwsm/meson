@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from glob import glob
 from pathlib import Path
 import argparse
 import errno
 import os
-import pickle
 import shlex
 import shutil
 import subprocess
@@ -26,13 +26,8 @@ import typing as T
 
 from . import build
 from . import environment
-from .backend.backends import (
-    InstallData, InstallDataBase, InstallEmptyDir, InstallSymlinkData,
-    TargetInstallData, ExecutableSerialisation
-)
-from .coredata import major_versions_differ, MesonVersionMismatchException
-from .coredata import version as coredata_version
-from .mesonlib import MesonException, Popen_safe, RealPathAction, is_windows, setup_vsenv
+from .backend.backends import InstallData
+from .mesonlib import MesonException, Popen_safe, RealPathAction, is_windows, setup_vsenv, pickle_load
 from .scripts import depfixer, destdir_join
 from .scripts.meson_exe import run_exe
 try:
@@ -43,6 +38,10 @@ except ImportError:
     main_file = None
 
 if T.TYPE_CHECKING:
+    from .backend.backends import (
+            ExecutableSerialisation, InstallDataBase, InstallEmptyDir,
+            InstallSymlinkData, TargetInstallData
+    )
     from .mesonlib import FileMode
 
     try:
@@ -61,6 +60,7 @@ if T.TYPE_CHECKING:
         dry_run: bool
         skip_subprojects: str
         tags: str
+        strip: bool
 
 
 symlink_warning = '''Warning: trying to copy a symlink that points to a file. This will copy the file,
@@ -88,6 +88,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help='Do not install files from given subprojects. (Since 0.58.0)')
     parser.add_argument('--tags', default=None,
                         help='Install only targets having one of the given tags. (Since 0.60.0)')
+    parser.add_argument('--strip', action='store_true',
+                        help='Strip targets even if strip option was not set during configure. (Since 0.62.0)')
 
 class DirMaker:
     def __init__(self, lf: T.TextIO, makedirs: T.Callable[..., None]):
@@ -126,6 +128,11 @@ class DirMaker:
         for d in self.dirs:
             append_to_log(self.lf, d)
 
+
+def load_install_data(fname: str) -> InstallData:
+    obj = pickle_load(fname, 'InstallData', InstallData)
+    assert isinstance(obj, InstallData), 'fo mypy'
+    return obj
 
 def is_executable(path: str, follow_symlinks: bool = False) -> bool:
     '''Checks whether any of the "x" bits are set in the source file mode.'''
@@ -228,7 +235,7 @@ def restore_selinux_contexts() -> None:
     '''
     try:
         subprocess.check_call(['selinuxenabled'])
-    except (FileNotFoundError, NotADirectoryError, PermissionError, subprocess.CalledProcessError):
+    except (FileNotFoundError, NotADirectoryError, OSError, PermissionError, subprocess.CalledProcessError):
         # If we don't have selinux or selinuxenabled returned 1, failure
         # is ignored quietly.
         return
@@ -419,11 +426,13 @@ class Installer:
         append_to_log(self.lf, to_file)
         return True
 
-    def do_symlink(self, target: str, link: str, full_dst_dir: str) -> bool:
+    def do_symlink(self, target: str, link: str, destdir: str, full_dst_dir: str, allow_missing: bool) -> bool:
         abs_target = target
         if not os.path.isabs(target):
             abs_target = os.path.join(full_dst_dir, target)
-        if not os.path.exists(abs_target):
+        elif not os.path.exists(abs_target) and not allow_missing:
+            abs_target = destdir_join(destdir, abs_target)
+        if not os.path.exists(abs_target) and not allow_missing:
             raise MesonException(f'Tried to install symlink to missing file {abs_target}')
         if os.path.exists(link):
             if not os.path.islink(link):
@@ -510,17 +519,8 @@ class Installer:
                 self.do_copyfile(abs_src, abs_dst)
                 self.set_mode(abs_dst, install_mode, data.install_umask)
 
-    @staticmethod
-    def check_installdata(obj: InstallData) -> InstallData:
-        if not isinstance(obj, InstallData) or not hasattr(obj, 'version'):
-            raise MesonVersionMismatchException('<unknown>', coredata_version)
-        if major_versions_differ(obj.version, coredata_version):
-            raise MesonVersionMismatchException(obj.version, coredata_version)
-        return obj
-
     def do_install(self, datafilename: str) -> None:
-        with open(datafilename, 'rb') as ifile:
-            d = self.check_installdata(pickle.load(ifile))
+        d = load_install_data(datafilename)
 
         destdir = self.options.destdir
         if destdir is None:
@@ -564,6 +564,15 @@ class Installer:
             else:
                 raise
 
+    def do_strip(self, strip_bin: T.List[str], fname: str, outname: str) -> None:
+        self.log(f'Stripping target {fname!r}.')
+        returncode, stdo, stde = self.Popen_safe(strip_bin + [outname])
+        if returncode != 0:
+            print('Could not strip file.\n')
+            print(f'Stdout:\n{stdo}\n')
+            print(f'Stderr:\n{stde}\n')
+            sys.exit(1)
+
     def install_subdirs(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
         for i in d.install_subdirs:
             if not self.should_install(i):
@@ -592,7 +601,7 @@ class Installer:
             full_dst_dir = get_destdir_path(destdir, fullprefix, s.install_path)
             full_link_name = get_destdir_path(destdir, fullprefix, s.name)
             dm.makedirs(full_dst_dir, exist_ok=True)
-            if self.do_symlink(s.target, full_link_name, full_dst_dir):
+            if self.do_symlink(s.target, full_link_name, destdir, full_dst_dir, s.allow_missing):
                 self.did_install_something = True
 
     def install_man(self, d: InstallData, dm: DirMaker, destdir: str, fullprefix: str) -> None:
@@ -676,8 +685,7 @@ class Installer:
             outdir = get_destdir_path(destdir, fullprefix, t.outdir)
             outname = os.path.join(outdir, os.path.basename(fname))
             final_path = os.path.join(d.prefix, t.outdir, os.path.basename(fname))
-            aliases = t.aliases
-            should_strip = t.strip
+            should_strip = t.strip or (t.can_strip and self.options.strip)
             install_rpath = t.install_rpath
             install_name_mappings = t.install_name_mappings
             install_mode = t.install_mode
@@ -685,18 +693,11 @@ class Installer:
                 raise MesonException(f'File {fname!r} could not be found')
             elif os.path.isfile(fname):
                 file_copied = self.do_copyfile(fname, outname, makedirs=(dm, outdir))
-                self.set_mode(outname, install_mode, d.install_umask)
                 if should_strip and d.strip_bin is not None:
                     if fname.endswith('.jar'):
                         self.log('Not stripping jar target: {}'.format(os.path.basename(fname)))
                         continue
-                    self.log('Stripping target {!r} using {}.'.format(fname, d.strip_bin[0]))
-                    returncode, stdo, stde = self.Popen_safe(d.strip_bin + [outname])
-                    if returncode != 0:
-                        print('Could not strip file.\n')
-                        print(f'Stdout:\n{stdo}\n')
-                        print(f'Stderr:\n{stde}\n')
-                        sys.exit(1)
+                    self.do_strip(d.strip_bin, fname, outname)
                 if fname.endswith('.js'):
                     # Emscripten outputs js files and optionally a wasm file.
                     # If one was generated, install it as well.
@@ -711,9 +712,6 @@ class Installer:
                 self.do_copydir(d, fname, outname, None, install_mode, dm)
             else:
                 raise RuntimeError(f'Unknown file type for {fname!r}')
-            for alias, target in aliases.items():
-                symlinkfilename = os.path.join(outdir, alias)
-                self.do_symlink(target, symlinkfilename, outdir)
             if file_copied:
                 self.did_install_something = True
                 try:
@@ -724,7 +722,8 @@ class Installer:
                         pass
                     else:
                         raise
-
+                # file mode needs to be set last, after strip/depfixer editing
+                self.set_mode(outname, install_mode, d.install_umask)
 
 def rebuild_all(wd: str) -> bool:
     if not (Path(wd) / 'build.ninja').is_file():

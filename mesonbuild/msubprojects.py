@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, InitVar
 import os, subprocess
 import argparse
@@ -13,11 +15,13 @@ import zipfile
 
 from . import mlog
 from .mesonlib import quiet_git, GitException, Popen_safe, MesonException, windows_proof_rmtree
-from .wrap.wrap import PackageDefinition, Resolver, WrapException, ALL_TYPES
+from .wrap.wrap import Resolver, WrapException, ALL_TYPES
 from .wrap import wraptool
 
 if T.TYPE_CHECKING:
     from typing_extensions import Protocol
+
+    from .wrap.wrap import PackageDefinition
 
     class Arguments(Protocol):
         sourcedir: str
@@ -25,6 +29,7 @@ if T.TYPE_CHECKING:
         subprojects: T.List[str]
         types: str
         subprojects_func: T.Callable[[], bool]
+        allow_insecure: bool
 
     class UpdateArguments(Arguments):
         rebase: bool
@@ -51,10 +56,10 @@ ALL_TYPES_STRING = ', '.join(ALL_TYPES)
 def read_archive_files(path: Path, base_path: Path) -> T.Set[Path]:
     if path.suffix == '.zip':
         with zipfile.ZipFile(path, 'r') as zip_archive:
-            archive_files = set(base_path / i.filename for i in zip_archive.infolist())
+            archive_files = {base_path / i.filename for i in zip_archive.infolist()}
     else:
         with tarfile.open(path) as tar_archive: # [ignore encoding]
-            archive_files = set(base_path / i.name for i in tar_archive)
+            archive_files = {base_path / i.name for i in tar_archive}
     return archive_files
 
 class Logger:
@@ -131,9 +136,9 @@ class Runner:
             branch, revision = wraptool.parse_patch_url(patch_url)
         except WrapException:
             return
-        new_branch, new_revision = wraptool.get_latest_version(self.wrap.name)
+        new_branch, new_revision = wraptool.get_latest_version(self.wrap.name, self.options.allow_insecure)
         if new_branch != branch or new_revision != revision:
-            wraptool.update_wrap_file(self.wrap.filename, self.wrap.name, new_branch, new_revision)
+            wraptool.update_wrap_file(self.wrap.filename, self.wrap.name, new_branch, new_revision, self.options.allow_insecure)
             self.log('  -> New wrap file downloaded.')
 
     def update_file(self) -> bool:
@@ -204,6 +209,7 @@ class Runner:
             self.git_stash()
             self.git_output(['reset', '--hard', 'FETCH_HEAD'])
             self.wrap_resolver.apply_patch()
+            self.wrap_resolver.apply_diff_files()
         except GitException as e:
             self.log('  -> Could not reset', mlog.bold(self.repo_dir), 'to', mlog.bold(revision))
             self.log(mlog.red(e.output))
@@ -575,6 +581,8 @@ def add_common_arguments(p: argparse.ArgumentParser) -> None:
                    help=f'Comma-separated list of subproject types. Supported types are: {ALL_TYPES_STRING} (default: all)')
     p.add_argument('--num-processes', default=None, type=int,
                    help='How many parallel processes to use (Since 0.59.0).')
+    p.add_argument('--allow-insecure', default=False, action='store_true',
+                   help='Allow insecure server connections.')
 
 def add_subprojects_argument(p: argparse.ArgumentParser) -> None:
     p.add_argument('subprojects', nargs='*',
@@ -643,7 +651,7 @@ def run(options: 'Arguments') -> int:
     if not os.path.isdir(subprojects_dir):
         mlog.log('Directory', mlog.bold(src_dir), 'does not seem to have subprojects.')
         return 0
-    r = Resolver(src_dir, 'subprojects')
+    r = Resolver(src_dir, 'subprojects', wrap_frontend=True, allow_insecure=options.allow_insecure)
     if options.subprojects:
         wraps = [wrap for name, wrap in r.wraps.items() if name in options.subprojects]
     else:

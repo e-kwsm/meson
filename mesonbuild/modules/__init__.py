@@ -14,18 +14,24 @@
 
 # This file contains the base representation for import('modname')
 
+from __future__ import annotations
+import dataclasses
 import typing as T
 
-from .. import build, mesonlib
+from .. import mesonlib
 from ..mesonlib import relpath, HoldableObject, MachineChoice
 from ..interpreterbase.decorators import noKwargs, noPosargs
+from ..programs import ExternalProgram
 
 if T.TYPE_CHECKING:
+    from .. import build
     from ..interpreter import Interpreter
     from ..interpreter.interpreterobjects import MachineHolder
     from ..interpreterbase import TYPE_var, TYPE_kwargs
-    from ..programs import ExternalProgram
+    from ..programs import OverrideProgram
     from ..wrap import WrapMode
+    from ..build import EnvironmentVariables, Executable
+    from ..dependencies import Dependency
 
 class ModuleState:
     """Object passed to all module methods.
@@ -43,6 +49,7 @@ class ModuleState:
                                     interpreter.environment.get_build_dir())
         self.subproject = interpreter.subproject
         self.subdir = interpreter.subdir
+        self.root_subdir = interpreter.root_subdir
         self.current_lineno = interpreter.current_lineno
         self.environment = interpreter.environment
         self.project_name = interpreter.build.project_name
@@ -80,8 +87,42 @@ class ModuleState:
 
     def find_program(self, prog: T.Union[str, T.List[str]], required: bool = True,
                      version_func: T.Optional[T.Callable[['ExternalProgram'], str]] = None,
-                     wanted: T.Optional[str] = None, silent: bool = False) -> 'ExternalProgram':
-        return self._interpreter.find_program_impl(prog, required=required, version_func=version_func, wanted=wanted, silent=silent)
+                     wanted: T.Optional[str] = None, silent: bool = False,
+                     for_machine: MachineChoice = MachineChoice.HOST) -> 'ExternalProgram':
+        return self._interpreter.find_program_impl(prog, required=required, version_func=version_func,
+                                                   wanted=wanted, silent=silent, for_machine=for_machine)
+
+    def find_tool(self, name: str, depname: str, varname: str, required: bool = True,
+                  wanted: T.Optional[str] = None) -> T.Union['Executable', ExternalProgram, 'OverrideProgram']:
+        # Look in overrides in case it's built as subproject
+        progobj = self._interpreter.program_from_overrides([name], [])
+        if progobj is not None:
+            return progobj
+
+        # Look in machine file
+        prog_list = self.environment.lookup_binary_entry(MachineChoice.HOST, name)
+        if prog_list is not None:
+            return ExternalProgram.from_entry(name, prog_list)
+
+        # Check if pkgconfig has a variable
+        dep = self.dependency(depname, native=True, required=False, wanted=wanted)
+        if dep.found() and dep.type_name == 'pkgconfig':
+            value = dep.get_variable(pkgconfig=varname)
+            if value:
+                return ExternalProgram(name, [value])
+
+        # Normal program lookup
+        return self.find_program(name, required=required, wanted=wanted)
+
+    def dependency(self, depname: str, native: bool = False, required: bool = True,
+                   wanted: T.Optional[str] = None) -> 'Dependency':
+        kwargs = {'native': native, 'required': required}
+        if wanted:
+            kwargs['version'] = wanted
+        # FIXME: Even if we fix the function, mypy still can't figure out what's
+        # going on here. And we really dont want to call interpreter
+        # implementations of meson functions anyway.
+        return self._interpreter.func_dependency(self.current_node, [depname], kwargs) # type: ignore
 
     def test(self, args: T.Tuple[str, T.Union[build.Executable, build.Jar, 'ExternalProgram', mesonlib.File]],
              workdir: T.Optional[str] = None,
@@ -103,6 +144,13 @@ class ModuleState:
                    module: T.Optional[str] = None) -> T.Union[str, int, bool, 'WrapMode']:
         return self.environment.coredata.get_option(mesonlib.OptionKey(name, subproject, machine, lang, module))
 
+    def is_user_defined_option(self, name: str, subproject: str = '',
+                               machine: MachineChoice = MachineChoice.HOST,
+                               lang: T.Optional[str] = None,
+                               module: T.Optional[str] = None) -> bool:
+        key = mesonlib.OptionKey(name, subproject, machine, lang, module)
+        return key in self._interpreter.user_defined_options.cmd_line_options
+
 
 class ModuleObject(HoldableObject):
     """Base class for all objects returned by modules
@@ -118,25 +166,16 @@ class MutableModuleObject(ModuleObject):
     pass
 
 
-# FIXME: Port all modules to stop using self.interpreter and use API on
-# ModuleState instead. Modules should stop using this class and instead use
-# ModuleObject base class.
-class ExtensionModule(ModuleObject):
-    def __init__(self, interpreter: 'Interpreter') -> None:
-        super().__init__()
-        self.interpreter = interpreter
-        self.methods.update({
-            'found': self.found_method,
-        })
+@dataclasses.dataclass
+class ModuleInfo:
 
-    @noPosargs
-    @noKwargs
-    def found_method(self, state: 'ModuleState', args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> bool:
-        return self.found()
+    """Metadata about a Module."""
 
-    @staticmethod
-    def found() -> bool:
-        return True
+    name: str
+    added: T.Optional[str] = None
+    deprecated: T.Optional[str] = None
+    unstable: bool = False
+    stabilized: T.Optional[str] = None
 
 
 class NewExtensionModule(ModuleObject):
@@ -145,6 +184,8 @@ class NewExtensionModule(ModuleObject):
 
     provides the found method.
     """
+
+    INFO: ModuleInfo
 
     def __init__(self) -> None:
         super().__init__()
@@ -161,6 +202,16 @@ class NewExtensionModule(ModuleObject):
     def found() -> bool:
         return True
 
+    def get_devenv(self) -> T.Optional['EnvironmentVariables']:
+        return None
+
+# FIXME: Port all modules to stop using self.interpreter and use API on
+# ModuleState instead. Modules should stop using this class and instead use
+# ModuleObject base class.
+class ExtensionModule(NewExtensionModule):
+    def __init__(self, interpreter: 'Interpreter') -> None:
+        super().__init__()
+        self.interpreter = interpreter
 
 class NotFoundExtensionModule(NewExtensionModule):
 
@@ -168,6 +219,10 @@ class NotFoundExtensionModule(NewExtensionModule):
 
     provides the found method.
     """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.INFO = ModuleInfo(name)
 
     @staticmethod
     def found() -> bool:
@@ -191,18 +246,3 @@ class ModuleReturnValue:
         self.return_value = return_value
         assert isinstance(new_objects, list)
         self.new_objects: T.List[T.Union['TYPE_var', 'build.ExecutableSerialisation']] = new_objects
-
-class GResourceTarget(build.CustomTarget):
-    pass
-
-class GResourceHeaderTarget(build.CustomTarget):
-    pass
-
-class GirTarget(build.CustomTarget):
-    pass
-
-class TypelibTarget(build.CustomTarget):
-    pass
-
-class VapiTarget(build.CustomTarget):
-    pass

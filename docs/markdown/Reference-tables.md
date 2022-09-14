@@ -46,6 +46,7 @@ These are return values of the `get_linker_id` method in a compiler object.
 | ld.bfd     | The GNU linker                              |
 | ld.gold    | The GNU gold linker                         |
 | ld.lld     | The LLVM linker, with the GNU interface     |
+| ld.mold    | The fast MOLD linker                        |
 | ld.solaris | Solaris and illumos                         |
 | ld.wasm    | emscripten's wasm-ld linker                 |
 | ld64       | Apple ld64                                  |
@@ -245,6 +246,8 @@ which are supported by GCC, Clang, and other compilers.
 | pure                     |
 | retain⁴                  |
 | returns_nonnull          |
+| section⁵                 |
+| sentinel⁵                |
 | unused                   |
 | used                     |
 | visibility*              |
@@ -266,6 +269,8 @@ which are supported by GCC, Clang, and other compilers.
 ³ *New in 0.55.0*
 
 ⁴ *New in 0.62.0*
+
+⁵ *New in 0.63.0*
 
 ### MSVC __declspec
 

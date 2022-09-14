@@ -68,6 +68,7 @@ syn keyword mesonBuiltin
   \ add_global_link_arguments
   \ add_languages
   \ add_project_arguments
+  \ add_project_dependencies
   \ add_project_link_arguments
   \ add_test_setup
   \ alias_target
@@ -116,6 +117,7 @@ syn keyword mesonBuiltin
   \ shared_library
   \ shared_module
   \ static_library
+  \ structured_sources
   \ subdir
   \ subdir_done
   \ subproject
@@ -126,6 +128,7 @@ syn keyword mesonBuiltin
   \ vcs_tag
   \ warning
   \ range
+  \ debug
 
 if exists("meson_space_error_highlight")
   " trailing whitespace

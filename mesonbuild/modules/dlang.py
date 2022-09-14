@@ -18,17 +18,18 @@
 import json
 import os
 
-from . import ExtensionModule
+from . import ExtensionModule, ModuleInfo
 from .. import dependencies
 from .. import mlog
-from ..interpreterbase import FeatureNew
+from ..interpreterbase import typed_pos_args
 from ..mesonlib import Popen_safe, MesonException
 
 class DlangModule(ExtensionModule):
     class_dubbin = None
     init_dub = False
 
-    @FeatureNew('Dlang Module', '0.48.0')
+    INFO = ModuleInfo('dlang', '0.48.0')
+
     def __init__(self, interpreter):
         super().__init__(interpreter)
         self.methods.update({
@@ -52,12 +53,10 @@ class DlangModule(ExtensionModule):
             if not self.dubbin:
                 raise MesonException('DUB not found.')
 
+    @typed_pos_args('dlang.generate_dub_file', str, str)
     def generate_dub_file(self, state, args, kwargs):
         if not DlangModule.init_dub:
             self._init_dub(state)
-
-        if len(args) < 2:
-            raise MesonException('Missing arguments')
 
         config = {
             'name': args[0]

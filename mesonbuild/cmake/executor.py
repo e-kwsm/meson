@@ -14,23 +14,26 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
 import subprocess as S
-from pathlib import Path
 from threading import Thread
 import typing as T
 import re
 import os
 
 from .. import mlog
-from ..mesonlib import PerMachine, Popen_safe, version_compare, MachineChoice, is_windows, OptionKey
+from ..mesonlib import PerMachine, Popen_safe, version_compare, is_windows, OptionKey
 from ..programs import find_external_program, NonExistingExternalProgram
 
 if T.TYPE_CHECKING:
+    from pathlib import Path
+
     from ..environment import Environment
+    from ..mesonlib import MachineChoice
     from ..programs import ExternalProgram
 
-TYPE_result    = T.Tuple[int, T.Optional[str], T.Optional[str]]
+TYPE_result = T.Tuple[int, T.Optional[str], T.Optional[str]]
 TYPE_cache_key = T.Tuple[str, T.Tuple[str, ...], str, T.FrozenSet[T.Tuple[str, str]]]
 
 class CMakeExecutor:

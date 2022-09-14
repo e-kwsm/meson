@@ -10,7 +10,9 @@ from typing_extensions import TypedDict, Literal, Protocol
 
 from .. import build
 from .. import coredata
-from ..mesonlib import MachineChoice, File, FileMode, FileOrString, OptionKey
+from ..compilers import Compiler
+from ..mesonlib import MachineChoice, File, FileMode, FileOrString
+from ..modules.cmake import CMakeSubprojectOptions
 from ..programs import ExternalProgram
 
 
@@ -172,7 +174,7 @@ class CustomTarget(TypedDict):
     capture: bool
     command: T.List[T.Union[str, build.BuildTarget, build.CustomTarget,
                             build.CustomTargetIndex, ExternalProgram, File]]
-    consonle: bool
+    console: bool
     depend_files: T.List[FileOrString]
     depends: T.List[T.Union[build.BuildTarget, build.CustomTarget]]
     depfile: T.Optional[str]
@@ -181,11 +183,10 @@ class CustomTarget(TypedDict):
     input: T.List[T.Union[str, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex,
                           build.ExtractedObjects, build.GeneratedList, ExternalProgram, File]]
     install: bool
-    install_dir: T.List[T.Union[str, bool]]
+    install_dir: T.List[T.Union[str, T.Literal[False]]]
     install_mode: FileMode
     install_tag: T.List[T.Optional[str]]
     output: T.List[str]
-    override_options: T.Dict[OptionKey, str]
 
 class AddTestSetup(TypedDict):
 
@@ -275,3 +276,34 @@ class VcsTag(TypedDict):
                           build.ExtractedObjects, build.GeneratedList, ExternalProgram, File]]
     output: T.List[str]
     replace_string: str
+
+
+class ConfigureFile(TypedDict):
+
+    output: str
+    capture: bool
+    format: T.Literal['meson', 'cmake', 'cmake@']
+    output_format: T.Literal['c', 'nasm']
+    depfile: T.Optional[str]
+    install: T.Optional[bool]
+    install_dir: T.Union[str, T.Literal[False]]
+    install_mode: FileMode
+    install_tag: T.Optional[str]
+    encoding: str
+    command: T.Optional[T.List[T.Union[build.Executable, ExternalProgram, Compiler, File, str]]]
+    input: T.List[FileOrString]
+    configuration: T.Optional[T.Union[T.Dict[str, T.Union[str, int, bool]], build.ConfigurationData]]
+
+
+class Subproject(ExtractRequired):
+
+    default_options: T.List[str]
+    version: T.List[str]
+
+
+class DoSubproject(ExtractRequired):
+
+    default_options: T.List[str]
+    version: T.List[str]
+    cmake_options: T.List[str]
+    options: T.Optional[CMakeSubprojectOptions]

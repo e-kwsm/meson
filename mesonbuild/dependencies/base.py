@@ -14,23 +14,31 @@
 
 # This file contains the detection logic for external dependencies.
 # Custom logic for several other packages are in separate files.
+
+from __future__ import annotations
 import copy
 import os
+import collections
 import itertools
 import typing as T
 from enum import Enum
 
-from .. import mlog
+from .. import mlog, mesonlib
 from ..compilers import clib_langs
-from ..mesonlib import LibType, MachineChoice, MesonException, HoldableObject
+from ..mesonlib import LibType, MachineChoice, MesonException, HoldableObject, OptionKey
 from ..mesonlib import version_compare_many
 #from ..interpreterbase import FeatureDeprecated, FeatureNew
 
 if T.TYPE_CHECKING:
     from .._typing import ImmutableListProtocol
+    from ..build import StructuredSources
     from ..compilers.compilers import Compiler
     from ..environment import Environment
-    from ..build import BuildTarget, CustomTarget, IncludeDirs
+    from ..interpreterbase import FeatureCheckBase
+    from ..build import (
+        CustomTarget, IncludeDirs, CustomTargetIndex, LibTypes,
+        StaticLibrary
+    )
     from ..mesonlib import FileOrString
 
 
@@ -89,9 +97,12 @@ class Dependency(HoldableObject):
         # Raw -L and -l arguments without manual library searching
         # If None, self.link_args will be used
         self.raw_link_args: T.Optional[T.List[str]] = None
-        self.sources: T.List[T.Union['FileOrString', 'CustomTarget']] = []
+        self.sources: T.List[T.Union['FileOrString', 'CustomTarget', 'StructuredSources']] = []
         self.include_type = self._process_include_type_kw(kwargs)
         self.ext_deps: T.List[Dependency] = []
+        self.d_features: T.DefaultDict[str, T.List[T.Any]] = collections.defaultdict(list)
+        self.featurechecks: T.List['FeatureCheckBase'] = []
+        self.feature_since: T.Optional[T.Tuple[str, str]] = None
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} {self.name}: {self.is_found}>'
@@ -143,7 +154,7 @@ class Dependency(HoldableObject):
     def found(self) -> bool:
         return self.is_found
 
-    def get_sources(self) -> T.List[T.Union['FileOrString', 'CustomTarget']]:
+    def get_sources(self) -> T.List[T.Union['FileOrString', 'CustomTarget', 'StructuredSources']]:
         """Source files that need to be added to the target.
         As an example, gtest-all.cc when using GTest."""
         return self.sources
@@ -156,6 +167,9 @@ class Dependency(HoldableObject):
             return self.version
         else:
             return 'unknown'
+
+    def get_include_dirs(self) -> T.List['IncludeDirs']:
+        return []
 
     def get_include_type(self) -> str:
         return self.include_type
@@ -208,7 +222,7 @@ class Dependency(HoldableObject):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
         if default_value is not None:
             return default_value
         raise DependencyException(f'No default provided for dependency {self!r}, which is not pkg-config, cmake, or config-tool based.')
@@ -221,10 +235,11 @@ class Dependency(HoldableObject):
 class InternalDependency(Dependency):
     def __init__(self, version: str, incdirs: T.List['IncludeDirs'], compile_args: T.List[str],
                  link_args: T.List[str],
-                 libraries: T.List[T.Union['BuildTarget', 'CustomTarget']],
-                 whole_libraries: T.List[T.Union['BuildTarget', 'CustomTarget']],
-                 sources: T.Sequence[T.Union['FileOrString', 'CustomTarget']],
-                 ext_deps: T.List[Dependency], variables: T.Dict[str, T.Any]):
+                 libraries: T.List[LibTypes],
+                 whole_libraries: T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]],
+                 sources: T.Sequence[T.Union[FileOrString, CustomTarget, StructuredSources]],
+                 ext_deps: T.List[Dependency], variables: T.Dict[str, str],
+                 d_module_versions: T.List[T.Union[str, int]], d_import_dirs: T.List['IncludeDirs']):
         super().__init__(DependencyTypeName('internal'), {})
         self.version = version
         self.is_found = True
@@ -236,6 +251,10 @@ class InternalDependency(Dependency):
         self.sources = list(sources)
         self.ext_deps = ext_deps
         self.variables = variables
+        if d_module_versions:
+            self.d_features['versions'] = d_module_versions
+        if d_import_dirs:
+            self.d_features['import_dirs'] = d_import_dirs
 
     def __deepcopy__(self, memo: T.Dict[int, 'InternalDependency']) -> 'InternalDependency':
         result = self.__class__.__new__(self.__class__)
@@ -283,26 +302,34 @@ class InternalDependency(Dependency):
         return InternalDependency(
             self.version, final_includes, final_compile_args,
             final_link_args, final_libraries, final_whole_libraries,
-            final_sources, final_deps, self.variables)
+            final_sources, final_deps, self.variables, [], [])
+
+    def get_include_dirs(self) -> T.List['IncludeDirs']:
+        return self.include_directories
 
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
         val = self.variables.get(internal, default_value)
         if val is not None:
-            # TODO: Try removing this assert by better typing self.variables
-            if isinstance(val, str):
-                return val
-            if isinstance(val, list):
-                for i in val:
-                    assert isinstance(i, str)
-                return val
+            return val
         raise DependencyException(f'Could not get an internal variable and no default provided for {self!r}')
 
     def generate_link_whole_dependency(self) -> Dependency:
+        from ..build import SharedLibrary, CustomTarget, CustomTargetIndex
         new_dep = copy.deepcopy(self)
-        new_dep.whole_libraries += new_dep.libraries
+        for x in new_dep.libraries:
+            if isinstance(x, SharedLibrary):
+                raise MesonException('Cannot convert a dependency to link_whole when it contains a '
+                                     'SharedLibrary')
+            elif isinstance(x, (CustomTarget, CustomTargetIndex)) and x.links_dynamically():
+                raise MesonException('Cannot convert a dependency to link_whole when it contains a '
+                                     'CustomTarget or CustomTargetIndex which is a shared library')
+
+        # Mypy doesn't understand that the above is a TypeGuard
+        new_dep.whole_libraries += T.cast('T.List[T.Union[StaticLibrary, CustomTarget, CustomTargetIndex]]',
+                                          new_dep.libraries)
         new_dep.libraries = []
         return new_dep
 
@@ -320,12 +347,13 @@ class ExternalDependency(Dependency, HasNativeKwarg):
         self.name = type_name # default
         self.is_found = False
         self.language = language
-        self.version_reqs = kwargs.get('version', None)
-        if isinstance(self.version_reqs, str):
-            self.version_reqs = [self.version_reqs]
+        version_reqs = kwargs.get('version', None)
+        if isinstance(version_reqs, str):
+            version_reqs = [version_reqs]
+        self.version_reqs: T.Optional[T.List[str]] = version_reqs
         self.required = kwargs.get('required', True)
         self.silent = kwargs.get('silent', False)
-        self.static = kwargs.get('static', False)
+        self.static = kwargs.get('static', self.env.coredata.get_option(OptionKey('prefer_static')))
         self.libtype = LibType.STATIC if self.static else LibType.PREFER_SHARED
         if not isinstance(self.static, bool):
             raise DependencyException('Static keyword must be boolean')
@@ -359,7 +387,8 @@ class ExternalDependency(Dependency, HasNativeKwarg):
     def log_info(self) -> str:
         return ''
 
-    def log_tried(self) -> str:
+    @staticmethod
+    def log_tried() -> str:
         return ''
 
     # Check if dependency version meets the requirements
@@ -377,7 +406,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
                 mlog.log(*found_msg)
 
                 if self.required:
-                    m = f'Unknown version of dependency {self.name!r}, but need {self.version_reqs!r}.'
+                    m = f'Unknown version, but need {self.version_reqs!r}.'
                     raise DependencyException(m)
 
             else:
@@ -394,7 +423,7 @@ class ExternalDependency(Dependency, HasNativeKwarg):
                     mlog.log(*found_msg)
 
                     if self.required:
-                        m = 'Invalid version of dependency, need {!r} {!r} found {!r}.'
+                        m = 'Invalid version, need {!r} {!r} found {!r}.'
                         raise DependencyException(m.format(self.name, not_found, self.version))
                     return
 
@@ -452,6 +481,22 @@ class ExternalLibrary(ExternalDependency):
         if not link_args:
             new.link_args = []
         return new
+
+
+def get_leaf_external_dependencies(deps: T.List[Dependency]) -> T.List[Dependency]:
+    if not deps:
+        # Ensure that we always return a new instance
+        return deps.copy()
+    final_deps = []
+    while deps:
+        next_deps = []
+        for d in mesonlib.listify(deps):
+            if not isinstance(d, Dependency) or d.is_built():
+                raise DependencyException('Dependencies must be external dependencies')
+            final_deps.append(d)
+            next_deps.extend(d.ext_deps)
+        deps = next_deps
+    return final_deps
 
 
 def sort_libpaths(libpaths: T.List[str], refpaths: T.List[str]) -> T.List[str]:
@@ -558,7 +603,8 @@ class SystemDependency(ExternalDependency):
         super().__init__(DependencyTypeName('system'), env, kwargs, language=language)
         self.name = name
 
-    def log_tried(self) -> str:
+    @staticmethod
+    def log_tried() -> str:
         return 'system'
 
 
@@ -571,5 +617,6 @@ class BuiltinDependency(ExternalDependency):
         super().__init__(DependencyTypeName('builtin'), env, kwargs, language=language)
         self.name = name
 
-    def log_tried(self) -> str:
+    @staticmethod
+    def log_tried() -> str:
         return 'builtin'

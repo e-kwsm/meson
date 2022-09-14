@@ -14,6 +14,7 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
 from .. import mparser, mesonlib
 from .. import environment
@@ -26,10 +27,7 @@ from .baseobjects import (
     ObjectHolder,
     IterableObject,
 
-    SubProject,
-
     TYPE_var,
-    TYPE_kwargs,
 
     HoldableTypes,
 )
@@ -54,6 +52,7 @@ import typing as T
 import textwrap
 
 if T.TYPE_CHECKING:
+    from .baseobjects import SubProject, TYPE_kwargs
     from ..interpreter import Interpreter
 
 HolderMapType = T.Dict[
@@ -218,7 +217,10 @@ class InterpreterBase:
         elif isinstance(cur, mparser.TernaryNode):
             return self.evaluate_ternary(cur)
         elif isinstance(cur, mparser.FormatStringNode):
-            return self.evaluate_fstring(cur)
+            if isinstance(cur, mparser.MultilineFormatStringNode):
+                return self.evaluate_multiline_fstring(cur)
+            else:
+                return self.evaluate_fstring(cur)
         elif isinstance(cur, mparser.ContinueNode):
             raise ContinueRequest()
         elif isinstance(cur, mparser.BreakNode):
@@ -368,6 +370,10 @@ class InterpreterBase:
         else:
             return self.evaluate_statement(node.falseblock)
 
+    @FeatureNew('multiline format strings', '0.63.0')
+    def evaluate_multiline_fstring(self, node: mparser.MultilineFormatStringNode) -> InterpreterObject:
+        return self.evaluate_fstring(node)
+
     @FeatureNew('format strings', '0.58.0')
     def evaluate_fstring(self, node: mparser.FormatStringNode) -> InterpreterObject:
         assert isinstance(node, mparser.FormatStringNode)
@@ -463,9 +469,10 @@ class InterpreterBase:
         invokable = node.source_object
         obj: T.Optional[InterpreterObject]
         if isinstance(invokable, mparser.IdNode):
-            object_name = invokable.value
-            obj = self.get_variable(object_name)
+            object_display_name = f'variable "{invokable.value}"'
+            obj = self.get_variable(invokable.value)
         else:
+            object_display_name = invokable.__class__.__name__
             obj = self.evaluate_statement(invokable)
         method_name = node.name
         (h_args, h_kwargs) = self.reduce_arguments(node.args)
@@ -473,13 +480,13 @@ class InterpreterBase:
         if is_disabled(args, kwargs):
             return Disabler()
         if not isinstance(obj, InterpreterObject):
-            raise InvalidArguments(f'Variable "{object_name}" is not callable.')
+            raise InvalidArguments(f'{object_display_name} is not callable.')
         # TODO: InterpreterBase **really** shouldn't be in charge of checking this
         if method_name == 'extract_objects':
             if isinstance(obj, ObjectHolder):
                 self.validate_extraction(obj.held_object)
             elif not isinstance(obj, Disabler):
-                raise InvalidArguments(f'Invalid operation "extract_objects" on variable "{object_name}" of type {type(obj).__name__}')
+                raise InvalidArguments(f'Invalid operation "extract_objects" on {object_display_name} of type {type(obj).__name__}')
         obj.current_node = node
         res = obj.method_call(method_name, args, kwargs)
         return self._holderify(res) if res is not None else None

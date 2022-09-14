@@ -1,4 +1,4 @@
-# Copyright 2016-2021 The Meson development team
+# Copyright 2016-2022 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,6 +46,8 @@ from mesonbuild.compilers import (
 from mesonbuild.dependencies import PkgConfigDependency
 import mesonbuild.modules.pkgconfig
 
+PKG_CONFIG = os.environ.get('PKG_CONFIG', 'pkg-config')
+
 
 from run_tests import (
     get_fake_env
@@ -53,6 +55,18 @@ from run_tests import (
 
 from .baseplatformtests import BasePlatformTests
 from .helpers import *
+
+def _prepend_pkg_config_path(path: str) -> str:
+    """Prepend a string value to pkg_config_path
+
+    :param path: The path to prepend
+    :return: The path, followed by any PKG_CONFIG_PATH already in the environment
+    """
+    pkgconf = os.environ.get('PKG_CONFIG_PATH')
+    if pkgconf:
+        return f'{path}{os.path.pathsep}{pkgconf}'
+    return path
+
 
 def _clang_at_least(compiler: 'Compiler', minver: str, apple_minver: T.Optional[str]) -> bool:
     """
@@ -185,7 +199,7 @@ class LinuxlikeTests(BasePlatformTests):
             'PKG_CONFIG_LIBDIR': os.pathsep.join([privatedir1, privatedir2]),
             'PKG_CONFIG_SYSTEM_LIBRARY_PATH': '/usr/lib',
         }
-        self._run(['pkg-config', 'dependency-test', '--validate'], override_envvars=env)
+        self._run([PKG_CONFIG, 'dependency-test', '--validate'], override_envvars=env)
 
         # pkg-config strips some duplicated flags so we have to parse the
         # generated file ourself.
@@ -210,21 +224,21 @@ class LinuxlikeTests(BasePlatformTests):
                     matched_lines += 1
             self.assertEqual(len(expected), matched_lines)
 
-        cmd = ['pkg-config', 'requires-test']
+        cmd = [PKG_CONFIG, 'requires-test']
         out = self._run(cmd + ['--print-requires'], override_envvars=env).strip().split('\n')
         if not is_openbsd():
             self.assertEqual(sorted(out), sorted(['libexposed', 'libfoo >= 1.0', 'libhello']))
         else:
             self.assertEqual(sorted(out), sorted(['libexposed', 'libfoo>=1.0', 'libhello']))
 
-        cmd = ['pkg-config', 'requires-private-test']
+        cmd = [PKG_CONFIG, 'requires-private-test']
         out = self._run(cmd + ['--print-requires-private'], override_envvars=env).strip().split('\n')
         if not is_openbsd():
             self.assertEqual(sorted(out), sorted(['libexposed', 'libfoo >= 1.0', 'libhello']))
         else:
             self.assertEqual(sorted(out), sorted(['libexposed', 'libfoo>=1.0', 'libhello']))
 
-        cmd = ['pkg-config', 'pub-lib-order']
+        cmd = [PKG_CONFIG, 'pub-lib-order']
         out = self._run(cmd + ['--libs'], override_envvars=env).strip().split()
         self.assertEqual(out, ['-llibmain2', '-llibinternal'])
 
@@ -324,8 +338,8 @@ class LinuxlikeTests(BasePlatformTests):
         Test that qt4 and qt5 detection with pkgconfig works.
         '''
         # Verify Qt4 or Qt5 can be found with pkg-config
-        qt4 = subprocess.call(['pkg-config', '--exists', 'QtCore'])
-        qt5 = subprocess.call(['pkg-config', '--exists', 'Qt5Core'])
+        qt4 = subprocess.call([PKG_CONFIG, '--exists', 'QtCore'])
+        qt5 = subprocess.call([PKG_CONFIG, '--exists', 'Qt5Core'])
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=pkg-config'])
         # Confirm that the dependency was found with pkg-config
@@ -373,8 +387,8 @@ class LinuxlikeTests(BasePlatformTests):
         Test that qt6 detection with qmake works. This can't be an ordinary
         test case because it involves setting the environment.
         '''
-        # Verify that qmake is for Qt5
-        if not shutil.which('qmake-qt6'):
+        # Verify that qmake is for Qt6
+        if not shutil.which('qmake6'):
             if not shutil.which('qmake'):
                 raise SkipTest('QMake not found')
             output = subprocess.getoutput('qmake --version')
@@ -601,7 +615,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         f = os.path.join(self.installdir, 'etc', 'etcfile.dat')
         found_mode = stat.filemode(os.stat(f).st_mode)
-        want_mode = 'rw------T'
+        want_mode = 'rw-------'
         self.assertEqual(want_mode, found_mode[1:])
 
         f = os.path.join(self.installdir, 'usr', 'bin', 'runscript.sh')
@@ -636,7 +650,7 @@ class LinuxlikeTests(BasePlatformTests):
         f = os.path.join(self.installdir, 'usr', 'share', 'sub1', 'second.dat')
         statf = os.stat(f)
         found_mode = stat.filemode(statf.st_mode)
-        want_mode = 'rwxr-x--t'
+        want_mode = 'rwxr-x--x'
         self.assertEqual(want_mode, found_mode[1:])
         if os.getuid() == 0:
             # The chown failed nonfatally if we're not root
@@ -659,15 +673,15 @@ class LinuxlikeTests(BasePlatformTests):
                 ('bin/trivialprog', '-rwxr-sr-x'),
                 ('include', 'drwxr-x---'),
                 ('include/config.h', '-rw-rwSr--'),
-                ('include/rootdir.h', '-r--r--r-T'),
+                ('include/rootdir.h', '-r--r--r--'),
                 ('lib', 'drwxr-x---'),
                 ('lib/libstat.a', '-rw---Sr--'),
                 ('share', 'drwxr-x---'),
                 ('share/man', 'drwxr-x---'),
                 ('share/man/man1', 'drwxr-x---'),
-                ('share/man/man1/foo.1', '-r--r--r-T'),
+                ('share/man/man1/foo.1', '-r--r--r--'),
                 ('share/sub1', 'drwxr-x---'),
-                ('share/sub1/second.dat', '-rwxr-x--t'),
+                ('share/sub1/second.dat', '-rwxr-x--x'),
                 ('subdir', 'drwxr-x---'),
                 ('subdir/data.dat', '-rw-rwSr--'),
         ]:
@@ -850,7 +864,7 @@ class LinuxlikeTests(BasePlatformTests):
                 gobject_found = True
         self.assertTrue(glib_found)
         self.assertTrue(gobject_found)
-        if subprocess.call(['pkg-config', '--exists', 'glib-2.0 >= 2.56.2']) != 0:
+        if subprocess.call([PKG_CONFIG, '--exists', 'glib-2.0 >= 2.56.2']) != 0:
             raise SkipTest('glib >= 2.56.2 needed for the rest')
         targets = self.introspect('--targets')
         docbook_target = None
@@ -931,7 +945,7 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         if is_cygwin():
             raise SkipTest('Windows PE/COFF binaries do not use RPATH')
-        testdir = os.path.join(self.unit_test_dir, '90 pkgconfig build rpath order')
+        testdir = os.path.join(self.unit_test_dir, '89 pkgconfig build rpath order')
         self.init(testdir, override_envvars={'PKG_CONFIG_PATH': testdir})
         self.build()
         build_rpath = get_rpath(os.path.join(self.builddir, 'prog'))
@@ -950,7 +964,7 @@ class LinuxlikeTests(BasePlatformTests):
         if is_osx():
             raise SkipTest('Global RPATHs via LDFLAGS not yet supported on MacOS (does anybody need it?)')
 
-        testdir = os.path.join(self.unit_test_dir, '80 global-rpath')
+        testdir = os.path.join(self.unit_test_dir, '79 global-rpath')
         oldinstalldir = self.installdir
 
         # Build and install an external library without DESTDIR.
@@ -1080,7 +1094,7 @@ class LinuxlikeTests(BasePlatformTests):
     def test_pkgconfig_usage(self):
         testdir1 = os.path.join(self.unit_test_dir, '27 pkgconfig usage/dependency')
         testdir2 = os.path.join(self.unit_test_dir, '27 pkgconfig usage/dependee')
-        if subprocess.call(['pkg-config', '--cflags', 'glib-2.0'],
+        if subprocess.call([PKG_CONFIG, '--cflags', 'glib-2.0'],
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL) != 0:
             raise SkipTest('Glib 2.0 dependency not available.')
@@ -1095,10 +1109,10 @@ class LinuxlikeTests(BasePlatformTests):
             myenv = os.environ.copy()
             myenv['PKG_CONFIG_PATH'] = pkg_dir
             # Private internal libraries must not leak out.
-            pkg_out = subprocess.check_output(['pkg-config', '--static', '--libs', 'libpkgdep'], env=myenv)
+            pkg_out = subprocess.check_output([PKG_CONFIG, '--static', '--libs', 'libpkgdep'], env=myenv)
             self.assertNotIn(b'libpkgdep-int', pkg_out, 'Internal library leaked out.')
             # Dependencies must not leak to cflags when building only a shared library.
-            pkg_out = subprocess.check_output(['pkg-config', '--cflags', 'libpkgdep'], env=myenv)
+            pkg_out = subprocess.check_output([PKG_CONFIG, '--cflags', 'libpkgdep'], env=myenv)
             self.assertNotIn(b'glib', pkg_out, 'Internal dependency leaked to headers.')
             # Test that the result is usable.
             self.init(testdir2, override_envvars=myenv)
@@ -1115,7 +1129,7 @@ class LinuxlikeTests(BasePlatformTests):
 
     @skipIfNoPkgconfig
     def test_pkgconfig_relative_paths(self):
-        testdir = os.path.join(self.unit_test_dir, '62 pkgconfig relative paths')
+        testdir = os.path.join(self.unit_test_dir, '61 pkgconfig relative paths')
         pkg_dir = os.path.join(testdir, 'pkgconfig')
         self.assertPathExists(os.path.join(pkg_dir, 'librelativepath.pc'))
 
@@ -1138,9 +1152,12 @@ class LinuxlikeTests(BasePlatformTests):
         env = get_fake_env(testdir, self.builddir, self.prefix)
         env.coredata.set_options({OptionKey('pkg_config_path'): pkg_dir}, subproject='')
 
-        PkgConfigDependency.setup_env({}, env, MachineChoice.HOST, pkg_dir)
+        # Regression test: This used to modify the value of `pkg_config_path`
+        # option, adding the meson-uninstalled directory to it.
+        PkgConfigDependency.setup_env({}, env, MachineChoice.HOST, uninstalled=True)
+
         pkg_config_path = env.coredata.options[OptionKey('pkg_config_path')].value
-        self.assertEqual(len(pkg_config_path), 1)
+        self.assertEqual(pkg_config_path, [pkg_dir])
 
     @skipIfNoPkgconfig
     def test_pkgconfig_internal_libraries(self):
@@ -1169,7 +1186,7 @@ class LinuxlikeTests(BasePlatformTests):
         Check that Meson produces valid static archives with --strip enabled
         '''
         with tempfile.TemporaryDirectory() as tempdirname:
-            testdirbase = os.path.join(self.unit_test_dir, '66 static archive stripping')
+            testdirbase = os.path.join(self.unit_test_dir, '65 static archive stripping')
 
             # build lib
             self.new_builddir()
@@ -1195,8 +1212,8 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.unit_test_dir, '38 pkgconfig format')
         self.init(testdir)
         myenv = os.environ.copy()
-        myenv['PKG_CONFIG_PATH'] = self.privatedir
-        stdo = subprocess.check_output(['pkg-config', '--libs-only-l', 'libsomething'], env=myenv)
+        myenv['PKG_CONFIG_PATH'] = _prepend_pkg_config_path(self.privatedir)
+        stdo = subprocess.check_output([PKG_CONFIG, '--libs-only-l', 'libsomething'], env=myenv)
         deps = [b'-lgobject-2.0', b'-lgio-2.0', b'-lglib-2.0', b'-lsomething']
         if is_windows() or is_cygwin() or is_osx() or is_openbsd():
             # On Windows, libintl is a separate library
@@ -1206,11 +1223,11 @@ class LinuxlikeTests(BasePlatformTests):
     @skipIfNoPkgconfig
     @skip_if_not_language('cs')
     def test_pkgconfig_csharp_library(self):
-        testdir = os.path.join(self.unit_test_dir, '50 pkgconfig csharp library')
+        testdir = os.path.join(self.unit_test_dir, '49 pkgconfig csharp library')
         self.init(testdir)
         myenv = os.environ.copy()
-        myenv['PKG_CONFIG_PATH'] = self.privatedir
-        stdo = subprocess.check_output(['pkg-config', '--libs', 'libsomething'], env=myenv)
+        myenv['PKG_CONFIG_PATH'] = _prepend_pkg_config_path(self.privatedir)
+        stdo = subprocess.check_output([PKG_CONFIG, '--libs', 'libsomething'], env=myenv)
 
         self.assertEqual("-r/usr/lib/libsomething.dll", str(stdo.decode('ascii')).strip())
 
@@ -1219,11 +1236,11 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         Test that libraries are listed before their dependencies.
         '''
-        testdir = os.path.join(self.unit_test_dir, '53 pkgconfig static link order')
+        testdir = os.path.join(self.unit_test_dir, '52 pkgconfig static link order')
         self.init(testdir)
         myenv = os.environ.copy()
-        myenv['PKG_CONFIG_PATH'] = self.privatedir
-        stdo = subprocess.check_output(['pkg-config', '--libs', 'libsomething'], env=myenv)
+        myenv['PKG_CONFIG_PATH'] = _prepend_pkg_config_path(self.privatedir)
+        stdo = subprocess.check_output([PKG_CONFIG, '--libs', 'libsomething'], env=myenv)
         deps = stdo.split()
         self.assertLess(deps.index(b'-lsomething'), deps.index(b'-ldependency'))
 
@@ -1231,7 +1248,7 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         Test that the dependencies are always listed in a deterministic order.
         '''
-        testdir = os.path.join(self.unit_test_dir, '43 dep order')
+        testdir = os.path.join(self.unit_test_dir, '42 dep order')
         self.init(testdir)
         with open(os.path.join(self.builddir, 'build.ninja'), encoding='utf-8') as bfile:
             for line in bfile:
@@ -1246,7 +1263,7 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         if is_cygwin():
             raise SkipTest('rpath are not used on Cygwin')
-        testdir = os.path.join(self.unit_test_dir, '42 rpath order')
+        testdir = os.path.join(self.unit_test_dir, '41 rpath order')
         self.init(testdir)
         if is_osx():
             rpathre = re.compile(r'-rpath,.*/subprojects/sub1.*-rpath,.*/subprojects/sub2')
@@ -1282,7 +1299,7 @@ class LinuxlikeTests(BasePlatformTests):
         '''
         oldprefix = self.prefix
         # Install external library so we can find it
-        testdir = os.path.join(self.unit_test_dir, '40 external, internal library rpath', 'external library')
+        testdir = os.path.join(self.unit_test_dir, '39 external, internal library rpath', 'external library')
         # install into installdir without using DESTDIR
         installdir = self.installdir
         self.prefix = installdir
@@ -1293,8 +1310,8 @@ class LinuxlikeTests(BasePlatformTests):
         ## New builddir for the consumer
         self.new_builddir()
         env = {'LIBRARY_PATH': os.path.join(installdir, self.libdir),
-               'PKG_CONFIG_PATH': os.path.join(installdir, self.libdir, 'pkgconfig')}
-        testdir = os.path.join(self.unit_test_dir, '40 external, internal library rpath', 'built library')
+               'PKG_CONFIG_PATH': _prepend_pkg_config_path(os.path.join(installdir, self.libdir, 'pkgconfig'))}
+        testdir = os.path.join(self.unit_test_dir, '39 external, internal library rpath', 'built library')
         # install into installdir without using DESTDIR
         self.prefix = self.installdir
         self.init(testdir, override_envvars=env)
@@ -1346,7 +1363,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         self.new_builddir()
         env = {'LIBRARY_PATH': os.path.join(installdir, self.libdir),
-               'PKG_CONFIG_PATH': os.path.join(installdir, self.libdir, 'pkgconfig')}
+               'PKG_CONFIG_PATH': _prepend_pkg_config_path(os.path.join(installdir, self.libdir, 'pkgconfig'))}
         testdir = os.path.join(self.unit_test_dir, '98 link full name','proguser')
         self.init(testdir,override_envvars=env)
 
@@ -1365,7 +1382,7 @@ class LinuxlikeTests(BasePlatformTests):
         # skip test if pkg-config is too old.
         #   before v0.28, Libs flags like -Wl will not kept in context order with -l flags.
         #   see https://gitlab.freedesktop.org/pkg-config/pkg-config/-/blob/master/NEWS
-        pkgconfigver = subprocess.check_output(['pkg-config', '--version'])
+        pkgconfigver = subprocess.check_output([PKG_CONFIG, '--version'])
         if b'0.28' > pkgconfigver:
             raise SkipTest('pkg-config is too old to be correctly done this.')
         self.run_tests()
@@ -1380,7 +1397,7 @@ class LinuxlikeTests(BasePlatformTests):
         oldinstalldir = self.installdir
 
         # Build and install both external libraries without DESTDIR
-        val1dir = os.path.join(self.unit_test_dir, '75 pkgconfig prefixes', 'val1')
+        val1dir = os.path.join(self.unit_test_dir, '74 pkgconfig prefixes', 'val1')
         val1prefix = os.path.join(oldinstalldir, 'val1')
         self.prefix = val1prefix
         self.installdir = val1prefix
@@ -1391,7 +1408,7 @@ class LinuxlikeTests(BasePlatformTests):
 
         env1 = {}
         env1['PKG_CONFIG_PATH'] = os.path.join(val1prefix, self.libdir, 'pkgconfig')
-        val2dir = os.path.join(self.unit_test_dir, '75 pkgconfig prefixes', 'val2')
+        val2dir = os.path.join(self.unit_test_dir, '74 pkgconfig prefixes', 'val2')
         val2prefix = os.path.join(oldinstalldir, 'val2')
         self.prefix = val2prefix
         self.installdir = val2prefix
@@ -1403,7 +1420,7 @@ class LinuxlikeTests(BasePlatformTests):
         # Build, install, and run the client program
         env2 = {}
         env2['PKG_CONFIG_PATH'] = os.path.join(val2prefix, self.libdir, 'pkgconfig')
-        testdir = os.path.join(self.unit_test_dir, '75 pkgconfig prefixes', 'client')
+        testdir = os.path.join(self.unit_test_dir, '74 pkgconfig prefixes', 'client')
         testprefix = os.path.join(oldinstalldir, 'client')
         self.prefix = testprefix
         self.installdir = testprefix
@@ -1457,7 +1474,7 @@ class LinuxlikeTests(BasePlatformTests):
 
     @skipIfNoPkgconfigDep('gmodule-2.0')
     def test_ldflag_dedup(self):
-        testdir = os.path.join(self.unit_test_dir, '52 ldflagdedup')
+        testdir = os.path.join(self.unit_test_dir, '51 ldflagdedup')
         if is_cygwin() or is_osx():
             raise SkipTest('Not applicable on Cygwin or OSX.')
         env = get_fake_env()
@@ -1475,7 +1492,7 @@ class LinuxlikeTests(BasePlatformTests):
         self.assertEqual(max_count, 1, 'Export dynamic incorrectly deduplicated.')
 
     def test_compiler_libs_static_dedup(self):
-        testdir = os.path.join(self.unit_test_dir, '56 dedup compiler libs')
+        testdir = os.path.join(self.unit_test_dir, '55 dedup compiler libs')
         self.init(testdir)
         build_ninja = os.path.join(self.builddir, 'build.ninja')
         with open(build_ninja, encoding='utf-8') as f:
@@ -1490,7 +1507,7 @@ class LinuxlikeTests(BasePlatformTests):
     @skipIfNoPkgconfig
     def test_noncross_options(self):
         # C_std defined in project options must be in effect also when native compiling.
-        testdir = os.path.join(self.unit_test_dir, '51 noncross options')
+        testdir = os.path.join(self.unit_test_dir, '50 noncross options')
         self.init(testdir, extra_args=['-Dpkg_config_path=' + testdir])
         compdb = self.get_compdb()
         self.assertEqual(len(compdb), 2)
@@ -1499,7 +1516,7 @@ class LinuxlikeTests(BasePlatformTests):
         self.build()
 
     def test_identity_cross(self):
-        testdir = os.path.join(self.unit_test_dir, '61 identity cross')
+        testdir = os.path.join(self.unit_test_dir, '60 identity cross')
 
         constantsfile = tempfile.NamedTemporaryFile(mode='w')
         constantsfile.write(textwrap.dedent('''\
@@ -1528,15 +1545,13 @@ class LinuxlikeTests(BasePlatformTests):
         self.init(testdir)
 
     def test_identity_cross_env(self):
-        testdir = os.path.join(self.unit_test_dir, '61 identity cross')
+        testdir = os.path.join(self.unit_test_dir, '60 identity cross')
         env = {
             'CC_FOR_BUILD': '"' + os.path.join(testdir, 'build_wrapper.py') + '"',
+            'CC': '"' + os.path.join(testdir, 'host_wrapper.py') + '"',
         }
         crossfile = tempfile.NamedTemporaryFile(mode='w')
-        crossfile.write(textwrap.dedent('''\
-            [binaries]
-            c = ['{}']
-            '''.format(os.path.join(testdir, 'host_wrapper.py'))))
+        crossfile.write('')
         crossfile.flush()
         self.meson_cross_files = [crossfile.name]
         # TODO should someday be explicit about build platform only here
@@ -1548,7 +1563,7 @@ class LinuxlikeTests(BasePlatformTests):
             raise SkipTest("Cygwin doesn't support LD_LIBRARY_PATH.")
 
         # Build some libraries and install them
-        testdir = os.path.join(self.unit_test_dir, '67 static link/lib')
+        testdir = os.path.join(self.unit_test_dir, '66 static link/lib')
         libdir = os.path.join(self.installdir, self.libdir)
         oldprefix = self.prefix
         self.prefix = self.installdir
@@ -1560,7 +1575,7 @@ class LinuxlikeTests(BasePlatformTests):
         self.prefix = oldprefix
         meson_args = [f'-Dc_link_args=-L{libdir}',
                       '--fatal-meson-warnings']
-        testdir = os.path.join(self.unit_test_dir, '67 static link')
+        testdir = os.path.join(self.unit_test_dir, '66 static link')
         env = {'PKG_CONFIG_LIBDIR': os.path.join(libdir, 'pkgconfig')}
         self.init(testdir, extra_args=meson_args, override_envvars=env)
         self.build()
@@ -1585,7 +1600,7 @@ class LinuxlikeTests(BasePlatformTests):
                 if isinstance(comp, (AppleClangCCompiler, AppleClangCPPCompiler,
                                      AppleClangObjCCompiler, AppleClangObjCPPCompiler)):
                     raise SkipTest('AppleClang is currently only supported with ld64')
-                if lang != 'rust' and comp.use_linker_args('bfd') == []:
+                if lang != 'rust' and comp.use_linker_args('bfd', '') == []:
                     raise SkipTest(
                         f'Compiler {comp.id} does not support using alternative linkers')
                 self.assertEqual(comp.linker.id, expected)
@@ -1634,7 +1649,7 @@ class LinuxlikeTests(BasePlatformTests):
             return hashlib.sha256(f.read()).hexdigest()
 
     def test_wrap_with_file_url(self):
-        testdir = os.path.join(self.unit_test_dir, '73 wrap file url')
+        testdir = os.path.join(self.unit_test_dir, '72 wrap file url')
         source_filename = os.path.join(testdir, 'subprojects', 'foo.tar.xz')
         patch_filename = os.path.join(testdir, 'subprojects', 'foo-patch.tar.xz')
         wrap_filename = os.path.join(testdir, 'subprojects', 'foo.wrap')
@@ -1691,7 +1706,7 @@ class LinuxlikeTests(BasePlatformTests):
             self.init(d, override_envvars={'PKG_CONFIG_LIBDIR': privatedir})
 
     def test_as_link_whole(self):
-        testdir = os.path.join(self.unit_test_dir, '77 as link whole')
+        testdir = os.path.join(self.unit_test_dir, '76 as link whole')
         self.init(testdir)
         with open(os.path.join(self.privatedir, 'bar1.pc'), encoding='utf-8') as f:
             content = f.read()
@@ -1708,13 +1723,11 @@ class LinuxlikeTests(BasePlatformTests):
             raise SkipTest('Prelinking not supported on Darwin.')
         if 'clang' in os.environ.get('CC', 'dummy'):
             raise SkipTest('Prelinking not supported with Clang.')
-        testdir = os.path.join(self.unit_test_dir, '87 prelinking')
+        testdir = os.path.join(self.unit_test_dir, '86 prelinking')
         env = get_fake_env(testdir, self.builddir, self.prefix)
         cc = detect_c_compiler(env, MachineChoice.HOST)
-        if cc.id == "gcc":
-            gccver = subprocess.check_output(['gcc', '--version'])
-            if b'7.5.0' in gccver:
-                raise SkipTest('GCC on Bionic is too old to be supported.')
+        if cc.id == "gcc" and not version_compare(cc.version, '>=9'):
+            raise SkipTest('Prelinking not supported with gcc 8 or older.')
         self.init(testdir)
         self.build()
         outlib = os.path.join(self.builddir, 'libprelinked.a')
@@ -1760,3 +1773,35 @@ class LinuxlikeTests(BasePlatformTests):
 
         # If so, we can test that cmake works with "gcc -m32"
         self.do_one_test_with_nativefile('../cmake/1 basic', "['gcc', '-m32']")
+
+    @skipUnless(is_linux(), 'Test only applicable to Linux')
+    def test_install_strip(self):
+        testdir = os.path.join(self.unit_test_dir, '104 strip')
+        self.init(testdir)
+        self.build()
+
+        destdir = self.installdir + self.prefix
+        lib = os.path.join(destdir, self.libdir, 'liba.so')
+        install_cmd = self.meson_command + ['install', '--destdir', self.installdir]
+
+        # Check we have debug symbols by default
+        self._run(install_cmd, workdir=self.builddir)
+        stdout = self._run(['file', '-b', lib])
+        self.assertIn('not stripped', stdout)
+
+        # Check debug symbols got removed with --strip
+        self._run(install_cmd + ['--strip'], workdir=self.builddir)
+        stdout = self._run(['file', '-b', lib])
+        self.assertNotIn('not stripped', stdout)
+
+    def test_isystem_default_removal_with_symlink(self):
+        env = get_fake_env()
+        cpp = detect_cpp_compiler(env, MachineChoice.HOST)
+        default_dirs = cpp.get_default_include_dirs()
+        default_symlinks = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(len(default_dirs)):
+                symlink = f'{tmpdir}/default_dir{i}'
+                default_symlinks.append(symlink)
+                os.symlink(default_dirs[i], symlink)
+            self.assertFalse(cpp.compiler_args([f'-isystem{symlink}' for symlink in default_symlinks]).to_native())

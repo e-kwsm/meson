@@ -38,9 +38,15 @@ pkgg.generate(
   libraries_private : [lib, '-lz'],
 )
 
-test('pkgconfig-validation', pkgconfig,
+env = environment()
+env.prepend('PKG_CONFIG_PATH', meson.current_build_dir() / 'meson-private')
+
+test(
+  'pkgconfig-validation',
+  pkgconfig,
   args: ['--validate', 'simple'],
-  env: [ 'PKG_CONFIG_PATH=' + meson.current_build_dir() + '/meson-private' ])
+  env : env,
+)
 
 answerlib = shared_library('answer', 'answer.c')
 
@@ -147,7 +153,7 @@ ct = custom_target('stat3',
   output: fs.name(outfile),
   command: [python, '-c', script],
 )
-simple6 = library('simple6', link_with: ct)
+simple6 = library('simple6', 'dependencies/dummy.c', link_with: ct)
 pkgg.generate(simple6)
 
 # implicit variables
@@ -162,4 +168,11 @@ pkgg.generate(
   description : 'Check that libdir is not an implicit var',
   version : libver,
   variables: ['bar=${libdir}/bar']
+)
+
+# Regression test: variables kwarg should listify single string value
+pkgg.generate(
+  name : 'libvartest3',
+  description : 'Check that variables can be single string',
+  variables: 'foo=bar',
 )

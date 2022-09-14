@@ -13,6 +13,8 @@
 # limitations under the License.
 
 """A library of random helper functionality."""
+
+from __future__ import annotations
 from pathlib import Path
 import argparse
 import enum
@@ -24,19 +26,22 @@ import platform, subprocess, operator, os, shlex, shutil, re
 import collections
 from functools import lru_cache, wraps, total_ordering
 from itertools import tee, filterfalse
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, NamedTemporaryFile
 import typing as T
-import uuid
 import textwrap
 import copy
+import pickle
 
 from mesonbuild import mlog
 
 if T.TYPE_CHECKING:
+    from typing_extensions import Literal
+
     from .._typing import ImmutableListProtocol
     from ..build import ConfigurationData
     from ..coredata import KeyedOptionDictType, UserOption
     from ..compilers.compilers import Compiler
+    from ..mparser import BaseNode
 
 FileOrString = T.Union['File', str]
 
@@ -87,6 +92,7 @@ __all__ = [
     'exe_exists',
     'expand_arguments',
     'extract_as_list',
+    'first',
     'generate_list',
     'get_compiler_for_source',
     'get_filenames_templates_dict',
@@ -118,6 +124,7 @@ __all__ = [
     'listify',
     'partition',
     'path_is_in_root',
+    'pickle_load',
     'Popen_safe',
     'quiet_git',
     'quote_arg',
@@ -166,6 +173,15 @@ class MesonException(Exception):
         self.file = file
         self.lineno = lineno
         self.colno = colno
+
+    @classmethod
+    def from_node(cls, *args: object, node: BaseNode) -> MesonException:
+        """Create a MesonException with location data from a BaseNode
+
+        :param node: A BaseNode to set location data from
+        :return: A Meson Exception instance
+        """
+        return cls(*args, file=node.filename, lineno=node.lineno, colno=node.colno)
 
 
 class MesonBugException(MesonException):
@@ -245,7 +261,7 @@ def is_ascii_string(astring: T.Union[str, bytes]) -> bool:
     return True
 
 
-def check_direntry_issues(direntry_array: T.Union[T.List[T.Union[str, bytes]], str, bytes]) -> None:
+def check_direntry_issues(direntry_array: T.Union[T.Iterable[T.Union[str, bytes]], str, bytes]) -> None:
     import locale
     # Warn if the locale is not UTF-8. This can cause various unfixable issues
     # such as os.stat not being able to decode filenames with unicode in them.
@@ -253,7 +269,7 @@ def check_direntry_issues(direntry_array: T.Union[T.List[T.Union[str, bytes]], s
     # encoding, so we can just warn about it.
     e = locale.getpreferredencoding()
     if e.upper() != 'UTF-8' and not is_windows():
-        if not isinstance(direntry_array, list):
+        if isinstance(direntry_array, (str, bytes)):
             direntry_array = [direntry_array]
         for de in direntry_array:
             if is_ascii_string(de):
@@ -696,6 +712,8 @@ def darwin_get_object_archs(objpath: str) -> 'ImmutableListProtocol[str]':
     # Convert from lipo-style archs to meson-style CPUs
     stdo = stdo.replace('i386', 'x86')
     stdo = stdo.replace('arm64', 'aarch64')
+    stdo = stdo.replace('ppc7400', 'ppc')
+    stdo = stdo.replace('ppc970', 'ppc')
     # Add generic name for armv7 and armv7s
     if 'armv7' in stdo:
         stdo += ' arm'
@@ -886,7 +904,7 @@ def version_compare_condition_with_min(condition: str, minimum: str) -> bool:
     if re.match(r'^\d+.\d+$', condition):
         condition += '.0'
 
-    return T.cast(bool, cmpop(Version(minimum), Version(condition)))
+    return T.cast('bool', cmpop(Version(minimum), Version(condition)))
 
 def search_version(text: str) -> str:
     # Usually of the type 4.1.4 but compiler output may contain
@@ -1091,14 +1109,14 @@ def join_args(args: T.Iterable[str]) -> str:
     return ' '.join([quote_arg(x) for x in args])
 
 
-def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
+def do_replacement(regex: T.Pattern[str], line: str,
+                   variable_format: Literal['meson', 'cmake', 'cmake@'],
                    confdata: T.Union[T.Dict[str, T.Tuple[str, T.Optional[str]]], 'ConfigurationData']) -> T.Tuple[str, T.Set[str]]:
     missing_variables = set()  # type: T.Set[str]
     if variable_format == 'cmake':
         start_tag = '${'
         backslash_tag = '\\${'
     else:
-        assert variable_format in ['meson', 'cmake@']
         start_tag = '@'
         backslash_tag = '\\@'
 
@@ -1129,7 +1147,8 @@ def do_replacement(regex: T.Pattern[str], line: str, variable_format: str,
             return var_str
     return re.sub(regex, variable_replace, line), missing_variables
 
-def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', variable_format: str) -> str:
+def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData',
+              variable_format: Literal['meson', 'cmake', 'cmake@']) -> str:
     def get_cmake_define(line: str, confdata: 'ConfigurationData') -> str:
         arr = line.split()
         define_value = []
@@ -1168,18 +1187,17 @@ def do_define(regex: T.Pattern[str], line: str, confdata: 'ConfigurationData', v
     else:
         raise MesonException('#mesondefine argument "%s" is of unknown type.' % varname)
 
-def get_variable_regex(variable_format: str = 'meson') -> T.Pattern[str]:
+def get_variable_regex(variable_format: Literal['meson', 'cmake', 'cmake@'] = 'meson') -> T.Pattern[str]:
     # Only allow (a-z, A-Z, 0-9, _, -) as valid characters for a define
     # Also allow escaping '@' with '\@'
-    if variable_format in ['meson', 'cmake@']:
+    if variable_format in {'meson', 'cmake@'}:
         regex = re.compile(r'(?:\\\\)+(?=\\?@)|\\@|@([-a-zA-Z0-9_]+)@')
-    elif variable_format == 'cmake':
-        regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     else:
-        raise MesonException(f'Format "{variable_format}" not handled')
+        regex = re.compile(r'(?:\\\\)+(?=\\?\$)|\\\${|\${([-a-zA-Z0-9_]+)}')
     return regex
 
-def do_conf_str(src: str, data: list, confdata: 'ConfigurationData', variable_format: str,
+def do_conf_str(src: str, data: list, confdata: 'ConfigurationData',
+                variable_format: Literal['meson', 'cmake', 'cmake@'],
                 encoding: str = 'utf-8') -> T.Tuple[T.List[str], T.Set[str], bool]:
     def line_is_valid(line: str, variable_format: str) -> bool:
         if variable_format == 'meson':
@@ -1216,7 +1234,8 @@ def do_conf_str(src: str, data: list, confdata: 'ConfigurationData', variable_fo
 
     return result, missing_variables, confdata_useless
 
-def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData', variable_format: str,
+def do_conf_file(src: str, dst: str, confdata: 'ConfigurationData',
+                 variable_format: Literal['meson', 'cmake', 'cmake@'],
                  encoding: str = 'utf-8') -> T.Tuple[T.Set[str], bool]:
     try:
         with open(src, encoding=encoding, newline='') as f:
@@ -1249,15 +1268,13 @@ CONF_NASM_PRELUDE = '''; Autogenerated by the Meson build system.
 
 '''
 
-def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: str) -> None:
+def dump_conf_header(ofilename: str, cdata: 'ConfigurationData', output_format: T.Literal['c', 'nasm']) -> None:
     if output_format == 'c':
         prelude = CONF_C_PRELUDE
         prefix = '#'
-    elif output_format == 'nasm':
+    else:
         prelude = CONF_NASM_PRELUDE
         prefix = '%'
-    else:
-        raise MesonBugException(f'Undefined output_format: "{output_format}"')
 
     ofilename_tmp = ofilename + '~'
     with open(ofilename_tmp, 'w', encoding='utf-8') as ofile:
@@ -1333,7 +1350,7 @@ def typeslistify(item: 'T.Union[_T, T.Sequence[_T]]',
     list of items all of which are of type @types
     '''
     if isinstance(item, types):
-        item = T.cast(T.List[_T], [item])
+        item = T.cast('T.List[_T]', [item])
     if not isinstance(item, list):
         raise MesonException('Item must be a list or one of {!r}, not {!r}'.format(types, type(item)))
     for i in item:
@@ -1378,20 +1395,22 @@ def partition(pred: T.Callable[[_T], object], iterable: T.Iterable[_T]) -> T.Tup
 
 
 def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
+               stdin: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.DEVNULL,
                stdout: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                stderr: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                **kwargs: T.Any) -> T.Tuple['subprocess.Popen[str]', str, str]:
     import locale
     encoding = locale.getpreferredencoding()
-    # Redirect stdin to DEVNULL otherwise the command run by us here might mess
+    # Stdin defaults to DEVNULL otherwise the command run by us here might mess
     # up the console and ANSI colors will stop working on Windows.
-    if 'stdin' not in kwargs:
-        kwargs['stdin'] = subprocess.DEVNULL
+    # If write is not None, set stdin to PIPE so data can be sent.
+    if write is not None:
+        stdin = subprocess.PIPE
     if not sys.stdout.encoding or encoding.upper() != 'UTF-8':
-        p, o, e = Popen_safe_legacy(args, write=write, stdout=stdout, stderr=stderr, **kwargs)
+        p, o, e = Popen_safe_legacy(args, write=write, stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
     else:
         p = subprocess.Popen(args, universal_newlines=True, close_fds=False,
-                             stdout=stdout, stderr=stderr, **kwargs)
+                             stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
         o, e = p.communicate(write)
     # Sometimes the command that we run will call another command which will be
     # without the above stdin workaround, so set the console mode again just in
@@ -1401,11 +1420,12 @@ def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
 
 
 def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
+                      stdin: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.DEVNULL,
                       stdout: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                       stderr: T.Union[T.TextIO, T.BinaryIO, int] = subprocess.PIPE,
                       **kwargs: T.Any) -> T.Tuple['subprocess.Popen[str]', str, str]:
     p = subprocess.Popen(args, universal_newlines=False, close_fds=False,
-                         stdout=stdout, stderr=stderr, **kwargs)
+                         stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
     input_ = None  # type: T.Optional[bytes]
     if write is not None:
         input_ = write.encode('utf-8')
@@ -1749,7 +1769,7 @@ class OrderedSet(T.MutableSet[_T]):
         for item in iterable:
             self.__container[item] = None
 
-    def difference(self, set_: T.Union[T.Set[_T], 'OrderedSet[_T]']) -> 'OrderedSet[_T]':
+    def difference(self, set_: T.Iterable[_T]) -> 'OrderedSet[_T]':
         return type(self)(e for e in self if e not in set_)
 
     def difference_update(self, iterable: T.Iterable[_T]) -> None:
@@ -1871,35 +1891,71 @@ class RealPathAction(argparse.Action):
         setattr(namespace, self.dest, os.path.abspath(os.path.realpath(values)))
 
 
-def get_wine_shortpath(winecmd: T.List[str], wine_paths: T.Sequence[str]) -> str:
-    """Get A short version of @wine_paths to avoid reaching WINEPATH number
-    of char limit.
-    """
+def get_wine_shortpath(winecmd: T.List[str], wine_paths: T.Sequence[str],
+                       workdir: T.Optional[str] = None) -> str:
+    '''
+    WINEPATH size is limited to 1024 bytes which can easily be exceeded when
+    adding the path to every dll inside build directory. See
+    https://bugs.winehq.org/show_bug.cgi?id=45810.
 
+    To shorten it as much as possible we use path relative to `workdir`
+    where possible and convert absolute paths to Windows shortpath (e.g.
+    "/usr/x86_64-w64-mingw32/lib" to "Z:\\usr\\X86_~FWL\\lib").
+
+    This limitation reportedly has been fixed with wine >= 6.4
+    '''
+
+    # Remove duplicates
     wine_paths = list(OrderedSet(wine_paths))
 
-    getShortPathScript = '%s.bat' % str(uuid.uuid4()).lower()[:5]
-    with open(getShortPathScript, mode='w', encoding='utf-8') as f:
-        f.write("@ECHO OFF\nfor %%x in (%*) do (\n echo|set /p=;%~sx\n)\n")
-        f.flush()
-    try:
-        with open(os.devnull, 'w', encoding='utf-8') as stderr:
-            wine_path = subprocess.check_output(
-                winecmd +
-                ['cmd', '/C', getShortPathScript] + wine_paths,
-                stderr=stderr).decode('utf-8')
-    except subprocess.CalledProcessError as e:
-        print("Could not get short paths: %s" % e)
-        wine_path = ';'.join(wine_paths)
-    finally:
-        os.remove(getShortPathScript)
-    if len(wine_path) > 2048:
-        raise MesonException(
-            'WINEPATH size {} > 2048'
-            ' this will cause random failure.'.format(
-                len(wine_path)))
+    # Check if it's already short enough
+    wine_path = ';'.join(wine_paths)
+    if len(wine_path) <= 1024:
+        return wine_path
 
-    return wine_path.strip(';')
+    # Check if we have wine >= 6.4
+    from ..programs import ExternalProgram
+    wine = ExternalProgram('wine', winecmd, silent=True)
+    if version_compare(wine.get_version(), '>=6.4'):
+        return wine_path
+
+    # Check paths that can be reduced by making them relative to workdir.
+    rel_paths = []
+    if workdir:
+        abs_paths = []
+        for p in wine_paths:
+            try:
+                rel = Path(p).relative_to(workdir)
+                rel_paths.append(str(rel))
+            except ValueError:
+                abs_paths.append(p)
+        wine_paths = abs_paths
+
+    if wine_paths:
+        # BAT script that takes a list of paths in argv and prints semi-colon separated shortpaths
+        with NamedTemporaryFile('w', suffix='.bat', encoding='utf-8', delete=False) as bat_file:
+            bat_file.write('''
+            @ECHO OFF
+            for %%x in (%*) do (
+                echo|set /p=;%~sx
+            )
+            ''')
+        try:
+            stdout = subprocess.check_output(winecmd + ['cmd', '/C', bat_file.name] + wine_paths,
+                                             encoding='utf-8', stderr=subprocess.DEVNULL)
+            stdout = stdout.strip(';')
+            if stdout:
+                wine_paths = stdout.split(';')
+            else:
+                mlog.warning('Could not shorten WINEPATH: empty stdout')
+        except subprocess.CalledProcessError as e:
+            mlog.warning(f'Could not shorten WINEPATH: {str(e)}')
+        finally:
+            os.unlink(bat_file.name)
+    wine_path = ';'.join(rel_paths + wine_paths)
+    if len(wine_path) > 1024:
+        mlog.warning('WINEPATH exceeds 1024 characters which could cause issues')
+    return wine_path
 
 
 def run_once(func: T.Callable[..., _T]) -> T.Callable[..., _T]:
@@ -1925,8 +1981,7 @@ def generate_list(func: T.Callable[..., T.Generator[_T, None, None]]) -> T.Calla
     return wrapper
 
 
-class OptionOverrideProxy(collections.abc.MutableMapping):
-
+class OptionOverrideProxy(collections.abc.Mapping):
     '''Mimic an option list but transparently override selected option
     values.
     '''
@@ -1934,26 +1989,29 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
     # TODO: the typing here could be made more explicit using a TypeDict from
     # python 3.8 or typing_extensions
 
-    def __init__(self, overrides: T.Dict['OptionKey', T.Any], *options: 'KeyedOptionDictType'):
-        self.overrides = overrides.copy()
-        self.options: T.Dict['OptionKey', UserOption] = {}
-        for o in options:
-            self.options.update(o)
+    def __init__(self, overrides: T.Dict['OptionKey', T.Any], options: 'KeyedOptionDictType',
+                 subproject: T.Optional[str] = None):
+        self.overrides = overrides
+        self.options = options
+        self.subproject = subproject
 
-    def __getitem__(self, key: 'OptionKey') -> T.Union['UserOption']:
-        if key in self.options:
+    def __getitem__(self, key: 'OptionKey') -> 'UserOption':
+        # FIXME: This is fundamentally the same algorithm than interpreter.get_option_internal().
+        # We should try to share the code somehow.
+        key = key.evolve(subproject=self.subproject)
+        if not key.is_project():
+            opt = self.options.get(key)
+            if opt is None or opt.yielding:
+                opt = self.options[key.as_root()]
+        else:
             opt = self.options[key]
-            if key in self.overrides:
-                opt = copy.copy(opt)
-                opt.set_value(self.overrides[key])
-            return opt
-        raise KeyError('Option not found', key)
-
-    def __setitem__(self, key: 'OptionKey', value: T.Union['UserOption']) -> None:
-        self.overrides[key] = value.value
-
-    def __delitem__(self, key: 'OptionKey') -> None:
-        del self.overrides[key]
+            if opt.yielding:
+                opt = self.options.get(key.as_root(), opt)
+        override_value = self.overrides.get(key.as_root())
+        if override_value is not None:
+            opt = copy.copy(opt)
+            opt.set_value(override_value)
+        return opt
 
     def __iter__(self) -> T.Iterator['OptionKey']:
         return iter(self.options)
@@ -1961,8 +2019,12 @@ class OptionOverrideProxy(collections.abc.MutableMapping):
     def __len__(self) -> int:
         return len(self.options)
 
-    def copy(self) -> 'OptionOverrideProxy':
-        return OptionOverrideProxy(self.overrides.copy(), self.options.copy())
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, OptionOverrideProxy):
+            return NotImplemented
+        t1 = (self.overrides, self.subproject, self.options)
+        t2 = (other.overrides, other.subproject, other.options)
+        return t1 == t2
 
 
 class OptionType(enum.IntEnum):
@@ -2001,6 +2063,7 @@ _BUILTIN_NAMES = {
     'install_umask',
     'layout',
     'optimization',
+    'prefer_static',
     'stdsplit',
     'strip',
     'unity',
@@ -2210,3 +2273,37 @@ class OptionKey:
     def is_base(self) -> bool:
         """Convenience method to check if this is a base option."""
         return self.type is OptionType.BASE
+
+def pickle_load(filename: str, object_name: str, object_type: T.Type) -> T.Any:
+    load_fail_msg = f'{object_name} file {filename!r} is corrupted. Try with a fresh build tree.'
+    try:
+        with open(filename, 'rb') as f:
+            obj = pickle.load(f)
+    except (pickle.UnpicklingError, EOFError):
+        raise MesonException(load_fail_msg)
+    except (TypeError, ModuleNotFoundError, AttributeError):
+        raise MesonException(
+            f"{object_name} file {filename!r} references functions or classes that don't "
+            "exist. This probably means that it was generated with an old "
+            "version of meson.")
+    if not isinstance(obj, object_type):
+        raise MesonException(load_fail_msg)
+    from ..coredata import version as coredata_version
+    from ..coredata import major_versions_differ, MesonVersionMismatchException
+    if major_versions_differ(obj.version, coredata_version):
+        raise MesonVersionMismatchException(obj.version, coredata_version)
+    return obj
+
+
+def first(iter: T.Iterable[_T], predicate: T.Callable[[_T], bool]) -> T.Optional[_T]:
+    """Find the first entry in an iterable where the given predicate is true
+
+    :param iter: The iterable to search
+    :param predicate: A finding function that takes an element from the iterable
+        and returns True if found, otherwise False
+    :return: The first found element, or None if it is not found
+    """
+    for i in iter:
+        if predicate(i):
+            return i
+    return None

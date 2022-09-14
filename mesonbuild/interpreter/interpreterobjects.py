@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import shlex
 import subprocess
@@ -15,23 +16,24 @@ from ..modules import ModuleReturnValue, ModuleObject, ModuleState, ExtensionMod
 from ..backend.backends import TestProtocol
 from ..interpreterbase import (
                                ContainerTypeInfo, KwargInfo, MesonOperator,
-                               InterpreterObject, MesonInterpreterObject, ObjectHolder, MutableInterpreterObject,
-                               FeatureCheckBase, FeatureNew, FeatureDeprecated,
+                               MesonInterpreterObject, ObjectHolder, MutableInterpreterObject,
+                               FeatureNew, FeatureDeprecated,
                                typed_pos_args, typed_kwargs, typed_operator,
-                               noArgsFlattening, noPosargs, noKwargs, unholder_return, TYPE_var, TYPE_kwargs, TYPE_nvar, TYPE_nkwargs,
+                               noArgsFlattening, noPosargs, noKwargs, unholder_return,
                                flatten, resolve_second_level_holders, InterpreterException, InvalidArguments, InvalidCode)
-from ..interpreter.type_checking import NoneType
+from ..interpreter.type_checking import NoneType, ENV_SEPARATOR_KW
 from ..dependencies import Dependency, ExternalLibrary, InternalDependency
 from ..programs import ExternalProgram
-from ..mesonlib import HoldableObject, MesonException, OptionKey, listify, Popen_safe
+from ..mesonlib import HoldableObject, OptionKey, listify, Popen_safe
 
 import typing as T
 
 if T.TYPE_CHECKING:
     from . import kwargs
-    from .interpreter import Interpreter
+    from ..cmake.interpreter import CMakeInterpreter
     from ..envconfig import MachineInfo
-    from ..interpreterbase import SubProject
+    from ..interpreterbase import FeatureCheckBase, InterpreterObject, SubProject, TYPE_var, TYPE_kwargs, TYPE_nvar, TYPE_nkwargs
+    from .interpreter import Interpreter
 
     from typing_extensions import TypedDict
 
@@ -85,8 +87,9 @@ class FeatureOptionHolder(ObjectHolder[coredata.UserFeatureOption]):
     def __init__(self, option: coredata.UserFeatureOption, interpreter: 'Interpreter'):
         super().__init__(option, interpreter)
         if option and option.is_auto():
-            # TODO: we need to case here because options is not a TypedDict
-            self.held_object = T.cast(coredata.UserFeatureOption, self.env.coredata.options[OptionKey('auto_features')])
+            # TODO: we need to cast here because options is not a TypedDict
+            auto = T.cast('coredata.UserFeatureOption', self.env.coredata.options[OptionKey('auto_features')])
+            self.held_object = copy.copy(auto)
             self.held_object.name = option.name
         self.methods.update({'enabled': self.enabled_method,
                              'disabled': self.disabled_method,
@@ -232,10 +235,6 @@ class RunProcess(MesonInterpreterObject):
     def stderr_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
         return self.stderr
 
-
-_ENV_SEPARATOR_KW = KwargInfo('separator', str, default=os.pathsep)
-
-
 class EnvironmentVariablesHolder(ObjectHolder[build.EnvironmentVariables], MutableInterpreterObject):
 
     def __init__(self, obj: build.EnvironmentVariables, interpreter: 'Interpreter'):
@@ -257,23 +256,23 @@ class EnvironmentVariablesHolder(ObjectHolder[build.EnvironmentVariables], Mutab
         # Multiple append/prepend operations was not supported until 0.58.0.
         if self.held_object.has_name(name):
             m = f'Overriding previous value of environment variable {name!r} with a new one'
-            FeatureNew(m, '0.58.0', location=self.current_node).use(self.subproject)
+            FeatureNew(m, '0.58.0').use(self.subproject, self.current_node)
 
     @typed_pos_args('environment.set', str, varargs=str, min_varargs=1)
-    @typed_kwargs('environment.set', _ENV_SEPARATOR_KW)
+    @typed_kwargs('environment.set', ENV_SEPARATOR_KW)
     def set_method(self, args: T.Tuple[str, T.List[str]], kwargs: 'EnvironmentSeparatorKW') -> None:
         name, values = args
         self.held_object.set(name, values, kwargs['separator'])
 
     @typed_pos_args('environment.append', str, varargs=str, min_varargs=1)
-    @typed_kwargs('environment.append', _ENV_SEPARATOR_KW)
+    @typed_kwargs('environment.append', ENV_SEPARATOR_KW)
     def append_method(self, args: T.Tuple[str, T.List[str]], kwargs: 'EnvironmentSeparatorKW') -> None:
         name, values = args
         self.warn_if_has_name(name)
         self.held_object.append(name, values, kwargs['separator'])
 
     @typed_pos_args('environment.prepend', str, varargs=str, min_varargs=1)
-    @typed_kwargs('environment.prepend', _ENV_SEPARATOR_KW)
+    @typed_kwargs('environment.prepend', ENV_SEPARATOR_KW)
     def prepend_method(self, args: T.Tuple[str, T.List[str]], kwargs: 'EnvironmentSeparatorKW') -> None:
         name, values = args
         self.warn_if_has_name(name)
@@ -481,10 +480,10 @@ class DependencyHolder(ObjectHolder[Dependency]):
         KwargInfo('default_value', (str, NoneType)),
         KwargInfo('pkgconfig_define', ContainerTypeInfo(list, str, pairs=True), default=[], listify=True),
     )
-    def variable_method(self, args: T.Tuple[T.Optional[str]], kwargs: 'kwargs.DependencyGetVariable') -> T.Union[str, T.List[str]]:
+    def variable_method(self, args: T.Tuple[T.Optional[str]], kwargs: 'kwargs.DependencyGetVariable') -> str:
         default_varname = args[0]
         if default_varname is not None:
-            FeatureNew('Positional argument to dependency.get_variable()', '0.58.0', location=self.current_node).use(self.subproject)
+            FeatureNew('Positional argument to dependency.get_variable()', '0.58.0').use(self.subproject, self.current_node)
         return self.held_object.get_variable(
             cmake=kwargs['cmake'] or default_varname,
             pkgconfig=kwargs['pkgconfig'] or default_varname,
@@ -520,6 +519,7 @@ class ExternalProgramHolder(ObjectHolder[ExternalProgram]):
         super().__init__(ep, interpreter)
         self.methods.update({'found': self.found_method,
                              'path': self.path_method,
+                             'version': self.version_method,
                              'full_path': self.full_path_method})
 
     @noPosargs
@@ -546,6 +546,17 @@ class ExternalProgramHolder(ObjectHolder[ExternalProgram]):
         path = self.held_object.get_path()
         assert path is not None
         return path
+
+    @noPosargs
+    @noKwargs
+    @FeatureNew('ExternalProgram.version', '0.62.0')
+    def version_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> str:
+        if not self.found():
+            raise InterpreterException('Unable to get the version of a not-found external program')
+        try:
+            return self.held_object.get_version(self.interpreter)
+        except mesonlib.MesonException:
+            return 'unknown'
 
     def found(self) -> bool:
         return self.held_object.found()
@@ -675,13 +686,14 @@ class SubprojectHolder(MesonInterpreterObject):
                  subdir: str,
                  warnings: int = 0,
                  disabled_feature: T.Optional[str] = None,
-                 exception: T.Optional[MesonException] = None) -> None:
+                 exception: T.Optional[Exception] = None) -> None:
         super().__init__()
         self.held_object = subinterpreter
         self.warnings = warnings
         self.disabled_feature = disabled_feature
         self.exception = exception
         self.subdir = PurePath(subdir).as_posix()
+        self.cm_interpreter: T.Optional[CMakeInterpreter] = None
         self.methods.update({'get_variable': self.get_variable_method,
                              'found': self.found_method,
                              })
@@ -967,3 +979,9 @@ class GeneratorHolder(ObjectHolder[build.Generator]):
                                             preserve_path_from, extra_args=kwargs['extra_args'])
 
         return gl
+
+
+class StructuredSourcesHolder(ObjectHolder[build.StructuredSources]):
+
+    def __init__(self, sources: build.StructuredSources, interp: 'Interpreter'):
+        super().__init__(sources, interp)

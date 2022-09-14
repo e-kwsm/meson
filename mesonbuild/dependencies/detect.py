@@ -27,17 +27,15 @@ if T.TYPE_CHECKING:
     from ..environment import Environment
     from .factory import DependencyFactory, WrappedFactoryFunc, DependencyGenerator
 
+    TV_DepIDEntry = T.Union[str, bool, int, T.Tuple[str, ...]]
+    TV_DepID = T.Tuple[T.Tuple[str, TV_DepIDEntry], ...]
+
 # These must be defined in this file to avoid cyclical references.
 packages: T.Dict[
     str,
     T.Union[T.Type[ExternalDependency], 'DependencyFactory', 'WrappedFactoryFunc']
 ] = {}
 _packages_accept_language: T.Set[str] = set()
-
-if T.TYPE_CHECKING:
-    TV_DepIDEntry = T.Union[str, bool, int, T.Tuple[str, ...]]
-    TV_DepID = T.Tuple[T.Tuple[str, TV_DepIDEntry], ...]
-
 
 def get_dep_identifier(name: str, kwargs: T.Dict[str, T.Any]) -> 'TV_DepID':
     identifier: 'TV_DepID' = (('name', name), )
@@ -105,7 +103,7 @@ def find_external_dependency(name: str, env: 'Environment', kwargs: T.Dict[str, 
     candidates = _build_external_dependency_list(name, env, for_machine, kwargs)
 
     pkg_exc: T.List[DependencyException] = []
-    pkgdep:  T.List[ExternalDependency]  = []
+    pkgdep:  T.List[ExternalDependency] = []
     details = ''
 
     for c in candidates:
@@ -115,8 +113,11 @@ def find_external_dependency(name: str, env: 'Environment', kwargs: T.Dict[str, 
             d._check_version()
             pkgdep.append(d)
         except DependencyException as e:
+            assert isinstance(c, functools.partial), 'for mypy'
+            bettermsg = f'Dependency lookup for {name} with method {c.func.log_tried()!r} failed: {e}'
+            mlog.debug(bettermsg)
+            e.args = (bettermsg,)
             pkg_exc.append(e)
-            mlog.debug(str(e))
         else:
             pkg_exc.append(None)
             details = d.log_details()
@@ -178,13 +179,12 @@ def _build_external_dependency_list(name: str, env: 'Environment', for_machine: 
         # class method, if one exists, otherwise the list just consists of the
         # constructor
         if isinstance(packages[lname], type):
-            entry1 = T.cast(T.Type[ExternalDependency], packages[lname])  # mypy doesn't understand isinstance(..., type)
+            entry1 = T.cast('T.Type[ExternalDependency]', packages[lname])  # mypy doesn't understand isinstance(..., type)
             if issubclass(entry1, ExternalDependency):
-                # TODO: somehow make mypy understand that entry1(env, kwargs) is OK...
-                func: T.Callable[[], 'ExternalDependency'] = lambda: entry1(env, kwargs)  # type: ignore
+                func: T.Callable[[], 'ExternalDependency'] = functools.partial(entry1, env, kwargs)
                 dep = [func]
         else:
-            entry2 = T.cast(T.Union['DependencyFactory', 'WrappedFactoryFunc'], packages[lname])
+            entry2 = T.cast('T.Union[DependencyFactory, WrappedFactoryFunc]', packages[lname])
             dep = entry2(env, for_machine, kwargs)
         return dep
 

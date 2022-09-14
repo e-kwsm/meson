@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from pathlib import Path
 from .traceparser import CMakeTraceParser
 from ..envconfig import CMakeSkipCompilerTest
-from ..mesonlib import MachineChoice
 from ..compilers import VisualStudioLikeCompiler
 from .common import language_map, cmake_get_generator_args
 from .. import mlog
@@ -29,6 +29,7 @@ if T.TYPE_CHECKING:
     from .executor import CMakeExecutor
     from ..environment import Environment
     from ..compilers import Compiler
+    from ..mesonlib import MachineChoice
 
 class CMakeExecScope(Enum):
     SUBPROJECT = 'subproject'
@@ -36,20 +37,20 @@ class CMakeExecScope(Enum):
 
 class CMakeToolchain:
     def __init__(self, cmakebin: 'CMakeExecutor', env: 'Environment', for_machine: MachineChoice, exec_scope: CMakeExecScope, build_dir: Path, preload_file: T.Optional[Path] = None) -> None:
-        self.env            = env
-        self.cmakebin       = cmakebin
-        self.for_machine    = for_machine
-        self.exec_scope     = exec_scope
-        self.preload_file   = preload_file
-        self.build_dir      = build_dir
-        self.build_dir      = self.build_dir.resolve()
+        self.env = env
+        self.cmakebin = cmakebin
+        self.for_machine = for_machine
+        self.exec_scope = exec_scope
+        self.preload_file = preload_file
+        self.build_dir = build_dir
+        self.build_dir = self.build_dir.resolve()
         self.toolchain_file = build_dir / 'CMakeMesonToolchainFile.cmake'
-        self.cmcache_file   = build_dir / 'CMakeCache.txt'
-        self.minfo          = self.env.machines[self.for_machine]
-        self.properties     = self.env.properties[self.for_machine]
-        self.compilers      = self.env.coredata.compilers[self.for_machine]
-        self.cmakevars      = self.env.cmakevars[self.for_machine]
-        self.cmakestate     = self.env.coredata.cmake_cache[self.for_machine]
+        self.cmcache_file = build_dir / 'CMakeCache.txt'
+        self.minfo = self.env.machines[self.for_machine]
+        self.properties = self.env.properties[self.for_machine]
+        self.compilers = self.env.coredata.compilers[self.for_machine]
+        self.cmakevars = self.env.cmakevars[self.for_machine]
+        self.cmakestate = self.env.coredata.cmake_cache[self.for_machine]
 
         self.variables = self.get_defaults()
         self.variables.update(self.cmakevars.get_variables())
@@ -164,7 +165,7 @@ class CMakeToolchain:
         # Only set these in a cross build. Otherwise CMake will trip up in native
         # builds and thing they are cross (which causes TRY_RUN() to break)
         if self.env.is_cross_build(when_building_for=self.for_machine):
-            defaults['CMAKE_SYSTEM_NAME']      = [SYSTEM_MAP.get(self.minfo.system, self.minfo.system)]
+            defaults['CMAKE_SYSTEM_NAME'] = [SYSTEM_MAP.get(self.minfo.system, self.minfo.system)]
             defaults['CMAKE_SYSTEM_PROCESSOR'] = [self.minfo.cpu_family]
 
         defaults['CMAKE_SIZEOF_VOID_P'] = ['8' if self.minfo.is_64_bit else '4']
@@ -215,8 +216,8 @@ class CMakeToolchain:
 
         # Generate the CMakeLists.txt
         mlog.debug('CMake Toolchain: Calling CMake once to generate the compiler state')
-        languages     = list(self.compilers.keys())
-        lang_ids      = [language_map.get(x, x.upper()) for x in languages]
+        languages = list(self.compilers.keys())
+        lang_ids = [language_map.get(x, x.upper()) for x in languages]
         cmake_content = dedent(f'''
             cmake_minimum_required(VERSION 3.7)
             project(CompInfo {' '.join(lang_ids)})
@@ -232,7 +233,7 @@ class CMakeToolchain:
         temp_toolchain_file.write_text(CMakeToolchain._print_vars(self.variables), encoding='utf-8')
 
         # Configure
-        trace = CMakeTraceParser(self.cmakebin.version(), build_dir)
+        trace = CMakeTraceParser(self.cmakebin.version(), build_dir, self.env)
         self.cmakebin.set_exec_mode(print_cmout=False, always_capture_stderr=trace.requires_stderr())
         cmake_args = []
         cmake_args += trace.trace_args()
@@ -252,7 +253,7 @@ class CMakeToolchain:
 
         for lang in languages:
             lang_cmake = language_map.get(lang, lang.upper())
-            file_name  = f'CMake{lang_cmake}Compiler.cmake'
+            file_name = f'CMake{lang_cmake}Compiler.cmake'
             vars = vars_by_file.setdefault(file_name, {})
             vars[f'CMAKE_{lang_cmake}_COMPILER_FORCED'] = ['1']
             self.cmakestate.update(lang, vars)

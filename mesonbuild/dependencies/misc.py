@@ -63,6 +63,7 @@ def netcdf_factory(env: 'Environment',
 class DlBuiltinDependency(BuiltinDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.62.0', "consider checking for `dlopen` with and without `find_library('dl')`")
 
         if self.clib_compiler.has_function('dlopen', '#include <dlfcn.h>', env)[0]:
             self.is_found = True
@@ -71,6 +72,7 @@ class DlBuiltinDependency(BuiltinDependency):
 class DlSystemDependency(SystemDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.62.0', "consider checking for `dlopen` with and without `find_library('dl')`")
 
         h = self.clib_compiler.has_header('dlfcn.h', '', env)
         self.link_args = self.clib_compiler.find_library('dl', env, [], self.libtype)
@@ -194,7 +196,6 @@ class Python3DependencySystem(SystemDependency):
             return
 
         self.name = 'python3'
-        self.static = kwargs.get('static', False)
         # We can only be sure that it is Python 3 at this point
         self.version = '3'
         self._find_libpy3_windows(environment)
@@ -283,7 +284,8 @@ class Python3DependencySystem(SystemDependency):
         self.version = sysconfig.get_config_var('py_version')
         self.is_found = True
 
-    def log_tried(self) -> str:
+    @staticmethod
+    def log_tried() -> str:
         return 'sysconfig'
 
 class PcapDependencyConfigTool(ConfigToolDependency):
@@ -392,9 +394,6 @@ class ShadercDependency(SystemDependency):
 
                 break
 
-    def log_tried(self) -> str:
-        return 'system'
-
 
 class CursesConfigToolDependency(ConfigToolDependency):
 
@@ -470,6 +469,7 @@ class CursesSystemDependency(SystemDependency):
 class IconvBuiltinDependency(BuiltinDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.60.0', "consider checking for `iconv_open` with and without `find_library('iconv')`")
         code = '''#include <iconv.h>\n\nint main() {\n    iconv_open("","");\n}''' # [ignore encoding] this is C, not python, Mr. Lint
 
         if self.clib_compiler.links(code, env)[0]:
@@ -479,6 +479,7 @@ class IconvBuiltinDependency(BuiltinDependency):
 class IconvSystemDependency(SystemDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.60.0', "consider checking for `iconv_open` with and without find_library('iconv')")
 
         h = self.clib_compiler.has_header('iconv.h', '', env)
         self.link_args = self.clib_compiler.find_library('iconv', env, [], self.libtype)
@@ -490,14 +491,17 @@ class IconvSystemDependency(SystemDependency):
 class IntlBuiltinDependency(BuiltinDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.59.0', "consider checking for `ngettext` with and without `find_library('intl')`")
+        code = '''#include <libintl.h>\n\nint main() {\n    gettext("Hello world");\n}'''
 
-        if self.clib_compiler.has_function('ngettext', '', env)[0]:
+        if self.clib_compiler.links(code, env)[0]:
             self.is_found = True
 
 
 class IntlSystemDependency(SystemDependency):
     def __init__(self, name: str, env: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, env, kwargs)
+        self.feature_since = ('0.59.0', "consider checking for `ngettext` with and without `find_library('intl')`")
 
         h = self.clib_compiler.has_header('libintl.h', '', env)
         self.link_args = self.clib_compiler.find_library('intl', env, [], self.libtype)
@@ -606,7 +610,7 @@ def shaderc_factory(env: 'Environment',
         shared_libs = ['shaderc']
         static_libs = ['shaderc_combined', 'shaderc_static']
 
-        if kwargs.get('static', False):
+        if kwargs.get('static', env.coredata.get_option(mesonlib.OptionKey('prefer_static'))):
             c = [functools.partial(PkgConfigDependency, name, env, kwargs)
                  for name in static_libs + shared_libs]
         else:

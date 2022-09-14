@@ -10,6 +10,10 @@ __all__ = [
     'StringHolder',
     'MesonVersionString',
     'MesonVersionStringHolder',
+    'DependencyVariableString',
+    'DependencyVariableStringHolder',
+    'OptionString',
+    'OptionStringHolder',
 ]
 
 from .array import ArrayHolder
@@ -17,4 +21,9 @@ from .boolean import BooleanHolder
 from .dict import DictHolder
 from .integer import IntegerHolder
 from .range import RangeHolder
-from .string import StringHolder, MesonVersionString, MesonVersionStringHolder
+from .string import (
+    StringHolder,
+    MesonVersionString, MesonVersionStringHolder,
+    DependencyVariableString, DependencyVariableStringHolder,
+    OptionString, OptionStringHolder,
+)

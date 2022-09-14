@@ -70,3 +70,27 @@ class PlatformAgnosticTests(BasePlatformTests):
     def test_python_dependency_without_pkgconfig(self):
         testdir = os.path.join(self.unit_test_dir, '103 python without pkgconfig')
         self.init(testdir, override_envvars={'PKG_CONFIG': 'notfound'})
+
+    def test_debug_function_outputs_to_meson_log(self):
+        testdir = os.path.join(self.unit_test_dir, '105 debug function')
+        log_msg = 'This is an example debug output, should only end up in debug log'
+        output = self.init(testdir)
+
+        # Check if message is not printed to stdout while configuring
+        self.assertNotIn(log_msg, output)
+
+        # Check if message is written to the meson log
+        mesonlog = os.path.join(self.builddir, 'meson-logs/meson-log.txt')
+        with open(mesonlog, mode='r', encoding='utf-8') as file:
+            self.assertIn(log_msg, file.read())
+
+    def test_new_subproject_reconfigure(self):
+        testdir = os.path.join(self.unit_test_dir, '108 new subproject on reconfigure')
+        self.init(testdir)
+        self.build()
+
+        # Enable the subproject "foo" and reconfigure, this is used to fail
+        # because per-subproject builtin options were not initialized:
+        # https://github.com/mesonbuild/meson/issues/10225.
+        self.setconf('-Dfoo=enabled')
+        self.build('reconfigure')

@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from .base import ExternalDependency, DependencyException, DependencyTypeName
 from ..mesonlib import is_windows, MesonException, PerMachine, stringlistify, extract_as_list
-from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException, CMakeToolchain, CMakeExecScope, check_cmake_args, CMakeTarget, resolve_cmake_trace_targets, cmake_is_debug
+from ..cmake import CMakeExecutor, CMakeTraceParser, CMakeException, CMakeToolchain, CMakeExecScope, check_cmake_args, resolve_cmake_trace_targets, cmake_is_debug
 from .. import mlog
 import importlib.resources
 from pathlib import Path
@@ -26,6 +27,7 @@ import textwrap
 import typing as T
 
 if T.TYPE_CHECKING:
+    from ..cmake import CMakeTarget
     from ..environment import Environment
     from ..envconfig import MachineInfo
 
@@ -76,10 +78,10 @@ class CMakeDependency(ExternalDependency):
         # one module
         return module
 
-    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None) -> None:
+    def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None, force_use_global_compilers: bool = False) -> None:
         # Gather a list of all languages to support
         self.language_list = []  # type: T.List[str]
-        if language is None:
+        if language is None or force_use_global_compilers:
             compilers = None
             if kwargs.get('native', False):
                 compilers = environment.coredata.compilers.build
@@ -104,7 +106,7 @@ class CMakeDependency(ExternalDependency):
         # Store a copy of the CMake path on the object itself so it is
         # stored in the pickled coredata and recovered.
         self.cmakebin:  T.Optional[CMakeExecutor] = None
-        self.cmakeinfo: T.Optional[CMakeInfo]     = None
+        self.cmakeinfo: T.Optional[CMakeInfo] = None
 
         # Where all CMake "build dirs" are located
         self.cmake_root_dir = environment.scratch_dir
@@ -127,7 +129,7 @@ class CMakeDependency(ExternalDependency):
             return
 
         # Setup the trace parser
-        self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
+        self.traceparser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir(), self.env)
 
         cm_args = stringlistify(extract_as_list(kwargs, 'cmake_args'))
         cm_args = check_cmake_args(cm_args)
@@ -166,7 +168,7 @@ class CMakeDependency(ExternalDependency):
             gen_list += [CMakeDependency.class_working_generator]
         gen_list += CMakeDependency.class_cmake_generators
 
-        temp_parser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir())
+        temp_parser = CMakeTraceParser(self.cmakebin.version(), self._get_build_dir(), self.env)
         toolchain = CMakeToolchain(self.cmakebin, self.env, self.for_machine, CMakeExecScope.DEPENDENCY, self._get_build_dir())
         toolchain.write()
 
@@ -546,12 +548,13 @@ class CMakeDependency(ExternalDependency):
                 self.found_modules += [i]
 
             rtgt = resolve_cmake_trace_targets(i, self.traceparser, self.env,
-                clib_compiler=self.clib_compiler,
-                not_found_warning=lambda x: mlog.warning('CMake: Dependency', mlog.bold(x), 'for', mlog.bold(name), 'was not found')
-            )
-            incDirs        += rtgt.include_directories
+                                               clib_compiler=self.clib_compiler,
+                                               not_found_warning=lambda x:
+                                                   mlog.warning('CMake: Dependency', mlog.bold(x), 'for', mlog.bold(name), 'was not found')
+                                               )
+            incDirs += rtgt.include_directories
             compileOptions += rtgt.public_compile_opts
-            libraries      += rtgt.libraries + rtgt.link_flags
+            libraries += rtgt.libraries + rtgt.link_flags
 
         # Make sure all elements in the lists are unique and sorted
         incDirs = sorted(set(incDirs))
@@ -614,8 +617,9 @@ class CMakeDependency(ExternalDependency):
         build_dir = self._setup_cmake_dir(cmake_file)
         return self.cmakebin.call(args, build_dir, env=env)
 
-    def log_tried(self) -> str:
-        return self.type_name
+    @staticmethod
+    def log_tried() -> str:
+        return 'cmake'
 
     def log_details(self) -> str:
         modules = [self._original_module_name(x) for x in self.found_modules]
@@ -627,17 +631,23 @@ class CMakeDependency(ExternalDependency):
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
                      default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> T.Union[str, T.List[str]]:
+                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
         if cmake and self.traceparser is not None:
             try:
                 v = self.traceparser.vars[cmake]
             except KeyError:
                 pass
             else:
-                if len(v) == 1:
-                    return v[0]
-                elif v:
-                    return v
+                # CMake does NOT have a list datatype. We have no idea whether
+                # anything is a string or a string-separated-by-; Internally,
+                # we treat them as the latter and represent everything as a
+                # list, because it is convenient when we are mostly handling
+                # imported targets, which have various properties that are
+                # actually lists.
+                #
+                # As a result we need to convert them back to strings when grabbing
+                # raw variables the user requested.
+                return ';'.join(v)
         if default_value is not None:
             return default_value
         raise DependencyException(f'Could not get cmake variable and no default provided for {self!r}')

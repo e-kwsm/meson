@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from pathlib import Path
 import typing as T
@@ -31,16 +32,17 @@ from .mixins.elbrus import ElbrusCompiler
 from .mixins.pgi import PGICompiler
 
 from mesonbuild.mesonlib import (
-    version_compare, EnvironmentException, MesonException, MachineChoice,
+    version_compare, EnvironmentException, MesonException,
     LibType, OptionKey,
 )
 
 if T.TYPE_CHECKING:
-    from ..coredata import KeyedOptionDictType
+    from ..coredata import MutableKeyedOptionDictType, KeyedOptionDictType
     from ..dependencies import Dependency
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker
+    from ..mesonlib import MachineChoice
     from ..programs import ExternalProgram
     from .compilers import CompileCheckMode
 
@@ -152,7 +154,7 @@ class FortranCompiler(CLikeCompiler, Compiler):
     def has_multi_link_arguments(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
         return self._has_multi_link_arguments(args, env, 'stop; end program')
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = super().get_options()
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         opts.update({
@@ -182,7 +184,7 @@ class GnuFortranCompiler(GnuCompiler, FortranCompiler):
                           '2': default_warn_args + ['-Wextra'],
                           '3': default_warn_args + ['-Wextra', '-Wpedantic', '-fimplicit-none']}
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = FortranCompiler.get_options(self)
         fortran_stds = ['legacy', 'f95', 'f2003']
         if version_compare(self.version, '>=4.4.0'):
@@ -215,11 +217,9 @@ class GnuFortranCompiler(GnuCompiler, FortranCompiler):
         # be passed to a different compiler with a different set of default
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
-        search_dir = self._get_search_dirs(env)
         search_dirs: T.List[str] = []
-        if search_dir is not None:
-            for d in search_dir.split()[-1][len('libraries: ='):].split(':'):
-                search_dirs.append(f'-L{d}')
+        for d in self.get_compiler_dirs(env, 'libraries'):
+            search_dirs.append(f'-L{d}')
         return search_dirs + ['-lgfortran', '-lm']
 
     def has_header(self, hname: str, prefix: str, env: 'Environment', *,
@@ -246,7 +246,7 @@ class ElbrusFortranCompiler(ElbrusCompiler, FortranCompiler):
                                  info, exe_wrapper, linker=linker, full_version=full_version)
         ElbrusCompiler.__init__(self)
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = FortranCompiler.get_options(self)
         fortran_stds = ['f95', 'f2003', 'f2008', 'gnu', 'legacy', 'f2008ts']
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
@@ -328,7 +328,7 @@ class IntelFortranCompiler(IntelGnuLikeCompiler, FortranCompiler):
                           '2': default_warn_args + ['-warn', 'unused'],
                           '3': ['-warn', 'all']}
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = FortranCompiler.get_options(self)
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         opts[key].choices = ['none', 'legacy', 'f95', 'f2003', 'f2008', 'f2018']
@@ -375,7 +375,7 @@ class IntelClFortranCompiler(IntelVisualStudioLikeCompiler, FortranCompiler):
                           '2': default_warn_args + ['/warn:unused'],
                           '3': ['/warn:all']}
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = FortranCompiler.get_options(self)
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         opts[key].choices = ['none', 'legacy', 'f95', 'f2003', 'f2008', 'f2018']
@@ -482,11 +482,9 @@ class FlangFortranCompiler(ClangCompiler, FortranCompiler):
         # search paths, such as when using Clang for C/C++ and gfortran for
         # fortran,
         # XXX: Untested....
-        search_dir = self._get_search_dirs(env)
         search_dirs: T.List[str] = []
-        if search_dir is not None:
-            for d in search_dir.split()[-1][len('libraries: ='):].split(':'):
-                search_dirs.append(f'-L{d}')
+        for d in self.get_compiler_dirs(env, 'libraries'):
+            search_dirs.append(f'-L{d}')
         return search_dirs + ['-lflang', '-lpgmath']
 
 class ArmLtdFlangFortranCompiler(FlangFortranCompiler):

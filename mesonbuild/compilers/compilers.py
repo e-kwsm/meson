@@ -1,4 +1,4 @@
-# Copyright 2012-2019 The Meson development team
+# Copyright 2012-2022 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import abc
 import contextlib, os.path, re
@@ -24,7 +25,7 @@ from .. import mlog
 from .. import mesonlib
 from ..mesonlib import (
     HoldableObject,
-    EnvironmentException, MachineChoice, MesonException,
+    EnvironmentException, MesonException,
     Popen_safe, LibType, TemporaryDirectoryWinProof, OptionKey,
 )
 
@@ -32,10 +33,11 @@ from ..arglist import CompilerArgs
 
 if T.TYPE_CHECKING:
     from ..build import BuildTarget
-    from ..coredata import KeyedOptionDictType
+    from ..coredata import MutableKeyedOptionDictType, KeyedOptionDictType
     from ..envconfig import MachineInfo
     from ..environment import Environment
     from ..linkers import DynamicLinker, RSPFileSyntax
+    from ..mesonlib import MachineChoice
     from ..dependencies import Dependency
 
     CompilerType = T.TypeVar('CompilerType', bound='Compiler')
@@ -105,6 +107,7 @@ CFLAGS_MAPPING: T.Mapping[str, str] = {
     'vala': 'VALAFLAGS',
     'rust': 'RUSTFLAGS',
     'cython': 'CYTHONFLAGS',
+    'cs': 'CSFLAGS', # This one might not be standard.
 }
 
 # All these are only for C-linkable languages; see `clink_langs` above.
@@ -278,7 +281,7 @@ base_options: 'KeyedOptionDictType' = {
                                                       ['default', 'thin'],
                                                       'default'),
     OptionKey('b_sanitize'): coredata.UserComboOption('Code sanitizer to use',
-                                                      ['none', 'address', 'thread', 'undefined', 'memory', 'address,undefined'],
+                                                      ['none', 'address', 'thread', 'undefined', 'memory', 'leak', 'address,undefined'],
                                                       'none'),
     OptionKey('b_lundef'): coredata.UserBooleanOption('Use -Wl,--no-undefined when linking', True),
     OptionKey('b_asneeded'): coredata.UserBooleanOption('Use -Wl,--as-needed when linking', True),
@@ -450,22 +453,18 @@ class CompileResult(HoldableObject):
     """The result of Compiler.compiles (and friends)."""
 
     def __init__(self, stdo: T.Optional[str] = None, stde: T.Optional[str] = None,
-                 args: T.Optional[T.List[str]] = None,
-                 returncode: int = 999, pid: int = -1,
-                 text_mode: bool = True,
+                 command: T.Optional[T.List[str]] = None,
+                 returncode: int = 999,
                  input_name: T.Optional[str] = None,
                  output_name: T.Optional[str] = None,
-                 command: T.Optional[T.List[str]] = None, cached: bool = False):
+                 cached: bool = False):
         self.stdout = stdo
         self.stderr = stde
         self.input_name = input_name
         self.output_name = output_name
         self.command = command or []
-        self.args = args or []
         self.cached = cached
         self.returncode = returncode
-        self.pid = pid
-        self.text_mode = text_mode
 
 
 class Compiler(HoldableObject, metaclass=abc.ABCMeta):
@@ -618,7 +617,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         """
         return []
 
-    def get_options(self) -> 'KeyedOptionDictType':
+    def get_options(self) -> 'MutableKeyedOptionDictType':
         return {}
 
     def get_option_compile_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
@@ -690,9 +689,13 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         """
         raise EnvironmentException('Language %s does not support function checks.' % self.get_display_language())
 
-    def unix_args_to_native(self, args: T.List[str]) -> T.List[str]:
+    @classmethod
+    def _unix_args_to_native(cls, args: T.List[str], info: MachineInfo) -> T.List[str]:
         "Always returns a copy that can be independently mutated"
         return args.copy()
+
+    def unix_args_to_native(self, args: T.List[str]) -> T.List[str]:
+        return self._unix_args_to_native(args, self.info)
 
     @classmethod
     def native_args_to_unix(cls, args: T.List[str]) -> T.List[str]:
@@ -805,7 +808,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
             mlog.debug('Compiler stdout:\n', stdo)
             mlog.debug('Compiler stderr:\n', stde)
 
-            result = CompileResult(stdo, stde, list(commands), p.returncode, p.pid, input_name=srcname)
+            result = CompileResult(stdo, stde, command_list, p.returncode, input_name=srcname)
             if want_output:
                 result.output_name = output
             yield result
@@ -1007,7 +1010,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         return dep.get_link_args()
 
     @classmethod
-    def use_linker_args(cls, linker: str) -> T.List[str]:
+    def use_linker_args(cls, linker: str, version: str) -> T.List[str]:
         """Get a list of arguments to pass to the compiler to set the linker.
         """
         return []
@@ -1269,6 +1272,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_no_warn_args(self) -> T.List[str]:
         """Arguments to completely disable warnings."""
         return []
+
+    def needs_static_linker(self) -> bool:
+        raise NotImplementedError(f'There is no static linker for {self.language}')
 
 
 def get_global_options(lang: str,
