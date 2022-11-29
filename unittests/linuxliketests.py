@@ -40,9 +40,11 @@ from mesonbuild.mesonlib import (
 )
 from mesonbuild.compilers import (
     detect_c_compiler, detect_cpp_compiler, compiler_from_language,
-    AppleClangCCompiler, AppleClangCPPCompiler, AppleClangObjCCompiler,
-    AppleClangObjCPPCompiler
 )
+from mesonbuild.compilers.c import AppleClangCCompiler
+from mesonbuild.compilers.cpp import AppleClangCPPCompiler
+from mesonbuild.compilers.objc import AppleClangObjCCompiler
+from mesonbuild.compilers.objcpp import AppleClangObjCPPCompiler
 from mesonbuild.dependencies import PkgConfigDependency
 import mesonbuild.modules.pkgconfig
 
@@ -180,7 +182,7 @@ class LinuxlikeTests(BasePlatformTests):
             for name in {'ct', 'ct0'}:
                 ct_dep = PkgConfigDependency(name, env, kwargs)
                 self.assertTrue(ct_dep.found())
-                self.assertIn('-lct', ct_dep.get_link_args())
+                self.assertIn('-lct', ct_dep.get_link_args(raw=True))
 
     def test_pkgconfig_gen_deps(self):
         '''
@@ -343,12 +345,12 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=pkg-config'])
         # Confirm that the dependency was found with pkg-config
-        mesonlog = self.get_meson_log()
+        mesonlog = self.get_meson_log_raw()
         if qt4 == 0:
-            self.assertRegex('\n'.join(mesonlog),
+            self.assertRegex(mesonlog,
                              r'Run-time dependency qt4 \(modules: Core\) found: YES 4.* \(pkg-config\)')
         if qt5 == 0:
-            self.assertRegex('\n'.join(mesonlog),
+            self.assertRegex(mesonlog,
                              r'Run-time dependency qt5 \(modules: Core\) found: YES 5.* \(pkg-config\)')
 
     @skip_if_not_base_option('b_sanitize')
@@ -378,8 +380,8 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=qmake'])
         # Confirm that the dependency was found with qmake
-        mesonlog = self.get_meson_log()
-        self.assertRegex('\n'.join(mesonlog),
+        mesonlog = self.get_meson_log_raw()
+        self.assertRegex(mesonlog,
                          r'Run-time dependency qt5 \(modules: Core\) found: YES .* \(qmake\)\n')
 
     def test_qt6dependency_qmake_detection(self):
@@ -398,8 +400,8 @@ class LinuxlikeTests(BasePlatformTests):
         testdir = os.path.join(self.framework_test_dir, '4 qt')
         self.init(testdir, extra_args=['-Dmethod=qmake'])
         # Confirm that the dependency was found with qmake
-        mesonlog = self.get_meson_log()
-        self.assertRegex('\n'.join(mesonlog),
+        mesonlog = self.get_meson_log_raw()
+        self.assertRegex(mesonlog,
                          r'Run-time dependency qt6 \(modules: Core\) found: YES .* \(qmake\)\n')
 
     def glob_sofiles_without_privdir(self, g):
@@ -1080,15 +1082,12 @@ class LinuxlikeTests(BasePlatformTests):
         also tested.
         '''
         testdir = os.path.join(self.framework_test_dir, '7 gnome')
-        mesonbuild.modules.gnome.native_glib_version = '2.20'
-        env = {'MESON_UNIT_TEST_PRETEND_GLIB_OLD': "1"}
-        try:
+        with mock.patch('mesonbuild.modules.gnome.GnomeModule._get_native_glib_version', mock.Mock(return_value='2.20')):
+            env = {'MESON_UNIT_TEST_PRETEND_GLIB_OLD': "1"}
             self.init(testdir,
                       inprocess=True,
                       override_envvars=env)
             self.build(override_envvars=env)
-        finally:
-            mesonbuild.modules.gnome.native_glib_version = None
 
     @skipIfNoPkgconfig
     def test_pkgconfig_usage(self):
@@ -1351,7 +1350,7 @@ class LinuxlikeTests(BasePlatformTests):
         see: https://github.com/mesonbuild/meson/issues/9000
              https://stackoverflow.com/questions/48532868/gcc-library-option-with-a-colon-llibevent-a
         '''
-        testdir = os.path.join(self.unit_test_dir, '98 link full name','libtestprovider')
+        testdir = os.path.join(self.unit_test_dir, '97 link full name','libtestprovider')
         oldprefix = self.prefix
         # install into installdir without using DESTDIR
         installdir = self.installdir
@@ -1364,7 +1363,7 @@ class LinuxlikeTests(BasePlatformTests):
         self.new_builddir()
         env = {'LIBRARY_PATH': os.path.join(installdir, self.libdir),
                'PKG_CONFIG_PATH': _prepend_pkg_config_path(os.path.join(installdir, self.libdir, 'pkgconfig'))}
-        testdir = os.path.join(self.unit_test_dir, '98 link full name','proguser')
+        testdir = os.path.join(self.unit_test_dir, '97 link full name','proguser')
         self.init(testdir,override_envvars=env)
 
         # test for link with full path
@@ -1774,25 +1773,41 @@ class LinuxlikeTests(BasePlatformTests):
         # If so, we can test that cmake works with "gcc -m32"
         self.do_one_test_with_nativefile('../cmake/1 basic', "['gcc', '-m32']")
 
-    @skipUnless(is_linux(), 'Test only applicable to Linux')
+    @skipUnless(is_linux() or is_osx(), 'Test only applicable to Linux and macOS')
     def test_install_strip(self):
-        testdir = os.path.join(self.unit_test_dir, '104 strip')
+        testdir = os.path.join(self.unit_test_dir, '103 strip')
         self.init(testdir)
         self.build()
 
         destdir = self.installdir + self.prefix
-        lib = os.path.join(destdir, self.libdir, 'liba.so')
+        if is_linux():
+            lib = os.path.join(destdir, self.libdir, 'liba.so')
+        else:
+            lib = os.path.join(destdir, self.libdir, 'liba.dylib')
         install_cmd = self.meson_command + ['install', '--destdir', self.installdir]
 
         # Check we have debug symbols by default
         self._run(install_cmd, workdir=self.builddir)
-        stdout = self._run(['file', '-b', lib])
-        self.assertIn('not stripped', stdout)
+        if is_linux():
+            # file can detect stripped libraries on linux
+            stdout = self._run(['file', '-b', lib])
+            self.assertIn('not stripped', stdout)
+        else:
+            # on macOS we need to query dsymutil instead.
+            # Alternatively, check if __dyld_private is defined
+            # in the output of nm liba.dylib, but that is not
+            # 100% reliable, it needs linking to an external library
+            stdout = self._run(['dsymutil', '--dump-debug-map', lib])
+            self.assertIn('symbols:', stdout)
 
         # Check debug symbols got removed with --strip
         self._run(install_cmd + ['--strip'], workdir=self.builddir)
-        stdout = self._run(['file', '-b', lib])
-        self.assertNotIn('not stripped', stdout)
+        if is_linux():
+            stdout = self._run(['file', '-b', lib])
+            self.assertNotIn('not stripped', stdout)
+        else:
+            stdout = self._run(['dsymutil', '--dump-debug-map', lib])
+            self.assertNotIn('symbols:', stdout)
 
     def test_isystem_default_removal_with_symlink(self):
         env = get_fake_env()
@@ -1805,3 +1820,11 @@ class LinuxlikeTests(BasePlatformTests):
                 default_symlinks.append(symlink)
                 os.symlink(default_dirs[i], symlink)
             self.assertFalse(cpp.compiler_args([f'-isystem{symlink}' for symlink in default_symlinks]).to_native())
+
+    def test_freezing(self):
+        testdir = os.path.join(self.unit_test_dir, '109 freeze')
+        self.init(testdir)
+        self.build()
+        with self.assertRaises(subprocess.CalledProcessError) as e:
+            self.run_tests()
+        self.assertNotIn('Traceback', e.exception.output)

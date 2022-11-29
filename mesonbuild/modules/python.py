@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 import functools
 import json
 import os
@@ -67,7 +68,7 @@ if T.TYPE_CHECKING:
 
     class PyInstallKw(TypedDict):
 
-        pure: bool
+        pure: T.Optional[bool]
         subdir: str
         install_tag: T.Optional[str]
 
@@ -75,6 +76,7 @@ if T.TYPE_CHECKING:
 
         disabler: bool
         modules: T.List[str]
+        pure: T.Optional[bool]
 
     _Base = ExternalDependency
 else:
@@ -118,6 +120,17 @@ class PythonPkgConfigDependency(PkgConfigDependency, _PythonDependencyBase):
 
         if libpc and not self.is_found:
             mlog.debug(f'"python-{self.version}" could not be found in LIBPC, this is likely due to a relocated python installation')
+
+        # The "-embed" version of python.pc was introduced in 3.8, and distutils
+        # extension linking was changed to be considered a non embed usage. Before
+        # then, this dependency always uses the embed=True file because that is the
+        # only one that exists,
+        #
+        # On macOS and some Linux distros (Debian) distutils doesn't link extensions
+        # against libpython, even on 3.7 and below. We call into distutils and
+        # mirror its behavior. See https://github.com/mesonbuild/meson/issues/4117
+        if not self.embed and not self.link_libpython and mesonlib.version_compare(self.version, '< 3.8'):
+            self.link_args = []
 
 
 class PythonFrameworkDependency(ExtraFrameworkDependency, _PythonDependencyBase):
@@ -370,6 +383,15 @@ def links_against_libpython():
 variables = sysconfig.get_config_vars()
 variables.update({'base_prefix': getattr(sys, 'base_prefix', sys.prefix)})
 
+if sys.version_info < (3, 0):
+    suffix = variables.get('SO')
+elif sys.version_info < (3, 8, 7):
+    # https://bugs.python.org/issue?@action=redirect&bpo=39825
+    from distutils.sysconfig import get_config_var
+    suffix = get_config_var('EXT_SUFFIX')
+else:
+    suffix = variables.get('EXT_SUFFIX')
+
 print(json.dumps({
   'variables': variables,
   'paths': paths,
@@ -380,6 +402,7 @@ print(json.dumps({
   'is_pypy': '__pypy__' in sys.builtin_module_names,
   'is_venv': sys.prefix != variables['base_prefix'],
   'link_libpython': links_against_libpython(),
+  'suffix': suffix,
 }))
 '''
 
@@ -409,6 +432,7 @@ class PythonExternalProgram(ExternalProgram):
             'variables': {},
             'version': '0.0',
         }
+        self.pure: bool = True
 
     def _check_version(self, version: str) -> bool:
         if self.name == 'python2':
@@ -437,8 +461,6 @@ class PythonExternalProgram(ExternalProgram):
             mlog.debug(stderr)
 
         if info is not None and self._check_version(info['version']):
-            variables = info['variables']
-            info['suffix'] = variables.get('EXT_SUFFIX') or variables.get('SO') or variables.get('.so')
             self.info = T.cast('PythonIntrospectionDict', info)
             self.platlib = self._get_path(state, 'platlib')
             self.purelib = self._get_path(state, 'purelib')
@@ -472,7 +494,7 @@ class PythonExternalProgram(ExternalProgram):
         return rel_path
 
 
-_PURE_KW = KwargInfo('pure', bool, default=True)
+_PURE_KW = KwargInfo('pure', (bool, NoneType))
 _SUBDIR_KW = KwargInfo('subdir', str, default='')
 
 
@@ -485,6 +507,7 @@ class PythonInstallation(ExternalProgramHolder):
         self.variables = info['variables']
         self.suffix = info['suffix']
         self.paths = info['paths']
+        self.pure = python.pure
         self.platlib_install_path = os.path.join(prefix, python.platlib)
         self.purelib_install_path = os.path.join(prefix, python.purelib)
         self.version = info['version']
@@ -517,17 +540,8 @@ class PythonInstallation(ExternalProgramHolder):
 
             kwargs['install_dir'] = self._get_install_dir_impl(False, subdir)
 
-        new_deps = []
-        has_pydep = False
-        for dep in mesonlib.extract_as_list(kwargs, 'dependencies'):
-            if isinstance(dep, _PythonDependencyBase):
-                has_pydep = True
-                # On macOS and some Linux distros (Debian) distutils doesn't link
-                # extensions against libpython. We call into distutils and mirror its
-                # behavior. See https://github.com/mesonbuild/meson/issues/4117
-                if not self.link_libpython:
-                    dep = dep.get_partial_dependency(compile_args=True)
-            new_deps.append(dep)
+        new_deps = mesonlib.extract_as_list(kwargs, 'dependencies')
+        has_pydep = any(isinstance(dep, _PythonDependencyBase) for dep in new_deps)
         if not has_pydep:
             pydep = self._dependency_method_impl({})
             if not pydep.found():
@@ -599,7 +613,8 @@ class PythonInstallation(ExternalProgramHolder):
     def install_sources_method(self, args: T.Tuple[T.List[T.Union[str, mesonlib.File]]],
                                kwargs: 'PyInstallKw') -> 'Data':
         tag = kwargs['install_tag'] or 'runtime'
-        install_dir = self._get_install_dir_impl(kwargs['pure'], kwargs['subdir'])
+        pure = kwargs['pure'] if kwargs['pure'] is not None else self.pure
+        install_dir = self._get_install_dir_impl(pure, kwargs['subdir'])
         return self.interpreter.install_data_impl(
             self.interpreter.source_strings_to_files(args[0]),
             install_dir,
@@ -610,7 +625,8 @@ class PythonInstallation(ExternalProgramHolder):
     @noPosargs
     @typed_kwargs('python_installation.install_dir', _PURE_KW, _SUBDIR_KW)
     def get_install_dir_method(self, args: T.List['TYPE_var'], kwargs: 'PyInstallKw') -> str:
-        return self._get_install_dir_impl(kwargs['pure'], kwargs['subdir'])
+        pure = kwargs['pure'] if kwargs['pure'] is not None else self.pure
+        return self._get_install_dir_impl(pure, kwargs['subdir'])
 
     def _get_install_dir_impl(self, pure: bool, subdir: str) -> P_OBJ.OptionString:
         if pure:
@@ -733,6 +749,7 @@ class PythonModule(ExtensionModule):
         KwargInfo('required', (bool, UserFeatureOption), default=True),
         KwargInfo('disabler', bool, default=False, since='0.49.0'),
         KwargInfo('modules', ContainerTypeInfo(list, str), listify=True, default=[], since='0.51.0'),
+        _PURE_KW.evolve(default=True, since='0.64.0'),
     )
     def find_installation(self, state: 'ModuleState', args: T.Tuple[T.Optional[str]],
                           kwargs: 'FindInstallationKw') -> ExternalProgram:
@@ -797,6 +814,8 @@ class PythonModule(ExtensionModule):
                 raise mesonlib.MesonException('{} is missing modules: {}'.format(name_or_path or 'python', ', '.join(missing_modules)))
             return NonExistingExternalProgram()
         else:
+            python = copy.copy(python)
+            python.pure = kwargs['pure']
             return python
 
         raise mesonlib.MesonBugException('Unreachable code was reached (PythonModule.find_installation).')

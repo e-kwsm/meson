@@ -36,6 +36,7 @@ from .compilers import (
     CompileCheckMode,
 )
 from .mixins.gnu import GnuCompiler
+from .mixins.gnu import gnu_common_warning_args
 
 if T.TYPE_CHECKING:
     from ..dependencies import Dependency
@@ -66,7 +67,8 @@ d_feature_args = {'gcc':  {'unittest': '-funittest',
                            }
                   }  # type: T.Dict[str, T.Dict[str, str]]
 
-ldc_optimization_args = {'0': [],
+ldc_optimization_args = {'plain': [],
+                         '0': [],
                          'g': [],
                          '1': ['-O1'],
                          '2': ['-O2'],
@@ -74,7 +76,8 @@ ldc_optimization_args = {'0': [],
                          's': ['-Oz'],
                          }  # type: T.Dict[str, T.List[str]]
 
-dmd_optimization_args = {'0': [],
+dmd_optimization_args = {'plain': [],
+                         '0': [],
                          'g': [],
                          '1': ['-O'],
                          '2': ['-O'],
@@ -312,7 +315,9 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
                 continue
             if arg.startswith('-fstack-protector'):
                 continue
-            if arg.startswith('-D'):
+            if arg.startswith('-D') and not (arg == '-D' or arg.startswith(('-Dd', '-Df'))):
+                # ignore all '-D*' flags (like '-D_THREAD_SAFE')
+                # unless they are related to documentation
                 continue
             if arg.startswith('-Wl,'):
                 # Translate linker arguments here.
@@ -541,7 +546,7 @@ class DCompiler(Compiler):
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None,
                  is_cross: bool = False):
-        super().__init__(exelist, version, for_machine, info, linker=linker,
+        super().__init__([], exelist, version, for_machine, info, linker=linker,
                          full_version=full_version, is_cross=is_cross)
         self.arch = arch
         self.exe_wrapper = exe_wrapper
@@ -803,7 +808,10 @@ class GnuDCompiler(GnuCompiler, DCompiler):
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra', '-Wpedantic']}
+                          '3': default_warn_args + ['-Wextra', '-Wpedantic'],
+                          'everything': (default_warn_args + ['-Wextra', '-Wpedantic'] +
+                                         self.supported_warn_args(gnu_common_warning_args))}
+
         self.base_options = {
             OptionKey(o) for o in [
              'b_colorout', 'b_sanitize', 'b_staticpic', 'b_vscrt',

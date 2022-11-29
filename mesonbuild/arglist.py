@@ -119,7 +119,7 @@ class CompilerArgs(T.MutableSequence[str]):
     # This correctly deduplicates the entries after _can_dedup definition
     # Note: This function is designed to work without delete operations, as deletions are worsening the performance a lot.
     def flush_pre_post(self) -> None:
-        new = list()                      # type: T.List[str]
+        new = []                          # type: T.List[str]
         pre_flush_set = set()             # type: T.Set[str]
         post_flush = collections.deque()  # type: T.Deque[str]
         post_flush_set = set()            # type: T.Set[str]
@@ -324,10 +324,10 @@ class CompilerArgs(T.MutableSequence[str]):
         return NotImplemented
 
     def append(self, arg: str) -> None:
-        self.__iadd__([arg])
+        self += [arg]
 
     def extend(self, args: T.Iterable[str]) -> None:
-        self.__iadd__(args)
+        self += args
 
     def __repr__(self) -> str:
         self.flush_pre_post()

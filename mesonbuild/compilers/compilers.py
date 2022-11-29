@@ -47,12 +47,13 @@ if T.TYPE_CHECKING:
 about. To support a new compiler, add its information below.
 Also add corresponding autodetection code in environment.py."""
 
-header_suffixes = ('h', 'hh', 'hpp', 'hxx', 'H', 'ipp', 'moc', 'vapi', 'di')  # type: T.Tuple[str, ...]
-obj_suffixes = ('o', 'obj', 'res')  # type: T.Tuple[str, ...]
+header_suffixes = {'h', 'hh', 'hpp', 'hxx', 'H', 'ipp', 'moc', 'vapi', 'di'}
+obj_suffixes = {'o', 'obj', 'res'}
 # To the emscripten compiler, .js files are libraries
-lib_suffixes = ('a', 'lib', 'dll', 'dll.a', 'dylib', 'so', 'js')  # type: T.Tuple[str, ...]
+lib_suffixes = {'a', 'lib', 'dll', 'dll.a', 'dylib', 'so', 'js'}
 # Mapping of language to suffixes of files that should always be in that language
 # This means we can't include .h headers here since they could be C, C++, ObjC, etc.
+# First suffix is the language's default.
 lang_suffixes = {
     'c': ('c',),
     'cpp': ('cpp', 'cc', 'cxx', 'c++', 'hh', 'hpp', 'ipp', 'hxx', 'ino', 'ixx', 'C'),
@@ -69,23 +70,26 @@ lang_suffixes = {
     'swift': ('swift',),
     'java': ('java',),
     'cython': ('pyx', ),
-}  # type: T.Dict[str, T.Tuple[str, ...]]
+    'nasm': ('asm',),
+    'masm': ('masm',),
+}
 all_languages = lang_suffixes.keys()
-cpp_suffixes = lang_suffixes['cpp'] + ('h',)  # type: T.Tuple[str, ...]
-c_suffixes = lang_suffixes['c'] + ('h',)  # type: T.Tuple[str, ...]
+c_cpp_suffixes = {'h'}
+cpp_suffixes = set(lang_suffixes['cpp']) | c_cpp_suffixes
+c_suffixes = set(lang_suffixes['c']) | c_cpp_suffixes
+assembler_suffixes = {'s', 'S', 'asm', 'masm'}
+llvm_ir_suffixes = {'ll'}
+all_suffixes = set(itertools.chain(*lang_suffixes.values(), assembler_suffixes, llvm_ir_suffixes, c_cpp_suffixes))
+source_suffixes = all_suffixes - header_suffixes
 # List of languages that by default consume and output libraries following the
 # C ABI; these can generally be used interchangeably
-clib_langs = ('objcpp', 'cpp', 'objc', 'c', 'fortran',)  # type: T.Tuple[str, ...]
-# List of assembler suffixes that can be linked with C code directly by the linker
-assembler_suffixes: T.Tuple[str, ...] = ('s', 'S')
+# This must be sorted, see sort_clink().
+clib_langs = ('objcpp', 'cpp', 'objc', 'c', 'fortran')
 # List of languages that can be linked with C code directly by the linker
 # used in build.py:process_compilers() and build.py:get_dynamic_linker()
-clink_langs = ('d', 'cuda') + clib_langs  # type: T.Tuple[str, ...]
-clink_suffixes = tuple()  # type: T.Tuple[str, ...]
-for _l in clink_langs + ('vala',):
-    clink_suffixes += lang_suffixes[_l]
-clink_suffixes += ('h', 'll', 's')
-all_suffixes = set(itertools.chain(*lang_suffixes.values(), clink_suffixes))  # type: T.Set[str]
+# This must be sorted, see sort_clink().
+clink_langs = ('d', 'cuda') + clib_langs
+
 SUFFIX_TO_LANG = dict(itertools.chain(*(
     [(suffix, lang) for suffix in v] for lang, v in lang_suffixes.items()))) # type: T.Dict[str, str]
 
@@ -133,17 +137,19 @@ def is_source(fname: 'mesonlib.FileOrString') -> bool:
     if isinstance(fname, mesonlib.File):
         fname = fname.fname
     suffix = fname.split('.')[-1].lower()
-    return suffix in clink_suffixes
+    return suffix in source_suffixes
 
 def is_assembly(fname: 'mesonlib.FileOrString') -> bool:
     if isinstance(fname, mesonlib.File):
         fname = fname.fname
-    return fname.split('.')[-1].lower() == 's'
+    suffix = fname.split('.')[-1]
+    return suffix in assembler_suffixes
 
 def is_llvm_ir(fname: 'mesonlib.FileOrString') -> bool:
     if isinstance(fname, mesonlib.File):
         fname = fname.fname
-    return fname.split('.')[-1] == 'll'
+    suffix = fname.split('.')[-1]
+    return suffix in llvm_ir_suffixes
 
 @lru_cache(maxsize=None)
 def cached_by_name(fname: 'mesonlib.FileOrString') -> bool:
@@ -250,7 +256,8 @@ msvc_winlibs = ['kernel32.lib', 'user32.lib', 'gdi32.lib',
                 'winspool.lib', 'shell32.lib', 'ole32.lib', 'oleaut32.lib',
                 'uuid.lib', 'comdlg32.lib', 'advapi32.lib']  # type: T.List[str]
 
-clike_optimization_args = {'0': [],
+clike_optimization_args = {'plain': [],
+                           '0': [],
                            'g': [],
                            '1': ['-O1'],
                            '2': ['-O2'],
@@ -258,7 +265,8 @@ clike_optimization_args = {'0': [],
                            's': ['-Os'],
                            }  # type: T.Dict[str, T.List[str]]
 
-cuda_optimization_args = {'0': [],
+cuda_optimization_args = {'plain': [],
+                          '0': [],
                           'g': ['-O0'],
                           '1': ['-O1'],
                           '2': ['-O2'],
@@ -275,11 +283,12 @@ clike_debug_args = {False: [],
 base_options: 'KeyedOptionDictType' = {
     OptionKey('b_pch'): coredata.UserBooleanOption('Use precompiled headers', True),
     OptionKey('b_lto'): coredata.UserBooleanOption('Use link time optimization', False),
-    OptionKey('b_lto'): coredata.UserBooleanOption('Use link time optimization', False),
     OptionKey('b_lto_threads'): coredata.UserIntegerOption('Use multiple threads for Link Time Optimization', (None, None, 0)),
     OptionKey('b_lto_mode'): coredata.UserComboOption('Select between different LTO modes.',
                                                       ['default', 'thin'],
                                                       'default'),
+    OptionKey('b_thinlto_cache'): coredata.UserBooleanOption('Use LLVM ThinLTO caching for faster incremental builds', False),
+    OptionKey('b_thinlto_cache_dir'): coredata.UserStringOption('Directory to store ThinLTO cache objects', ''),
     OptionKey('b_sanitize'): coredata.UserComboOption('Code sanitizer to use',
                                                       ['none', 'address', 'thread', 'undefined', 'memory', 'leak', 'address,undefined'],
                                                       'none'),
@@ -377,13 +386,19 @@ def get_base_compile_args(options: 'KeyedOptionDictType', compiler: 'Compiler') 
     return args
 
 def get_base_link_args(options: 'KeyedOptionDictType', linker: 'Compiler',
-                       is_shared_module: bool) -> T.List[str]:
+                       is_shared_module: bool, build_dir: str) -> T.List[str]:
     args = []  # type: T.List[str]
     try:
         if options[OptionKey('b_lto')].value:
+            thinlto_cache_dir = None
+            if get_option_value(options, OptionKey('b_thinlto_cache'), False):
+                thinlto_cache_dir = get_option_value(options, OptionKey('b_thinlto_cache_dir'), '')
+                if thinlto_cache_dir == '':
+                    thinlto_cache_dir = os.path.join(build_dir, 'meson-private', 'thinlto-cache')
             args.extend(linker.get_lto_link_args(
                 threads=get_option_value(options, OptionKey('b_lto_threads'), 0),
-                mode=get_option_value(options, OptionKey('b_lto_mode'), 'default')))
+                mode=get_option_value(options, OptionKey('b_lto_mode'), 'default'),
+                thinlto_cache_dir=thinlto_cache_dir))
     except KeyError:
         pass
     try:
@@ -481,12 +496,14 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     language: str
     id: str
     warn_args: T.Dict[str, T.List[str]]
+    mode: str = 'COMPILER'
 
-    def __init__(self, exelist: T.List[str], version: str,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str,
                  for_machine: MachineChoice, info: 'MachineInfo',
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None, is_cross: bool = False):
-        self.exelist = exelist
+        self.exelist = ccache + exelist
+        self.exelist_no_ccache = exelist
         # In case it's been overridden by a child class already
         if not hasattr(self, 'file_suffixes'):
             self.file_suffixes = lang_suffixes[self.language]
@@ -500,6 +517,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
         self.linker = linker
         self.info = info
         self.is_cross = is_cross
+        self.modes: T.List[Compiler] = []
 
     def __repr__(self) -> str:
         repr_str = "<{0}: v{1} `{2}`>"
@@ -517,6 +535,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
 
     def get_id(self) -> str:
         return self.id
+
+    def get_modes(self) -> T.List[Compiler]:
+        return self.modes
 
     def get_linker_id(self) -> str:
         # There is not guarantee that we have a dynamic linker instance, as
@@ -573,8 +594,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def symbols_have_underscore_prefix(self, env: 'Environment') -> bool:
         raise EnvironmentException('%s does not support symbols_have_underscore_prefix ' % self.get_id())
 
-    def get_exelist(self) -> T.List[str]:
-        return self.exelist.copy()
+    def get_exelist(self, ccache: bool = True) -> T.List[str]:
+        return self.exelist.copy() if ccache else self.exelist_no_ccache.copy()
 
     def get_linker_exelist(self) -> T.List[str]:
         return self.linker.get_exelist()
@@ -795,7 +816,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
             if extra_args:
                 commands += extra_args
             # Generate full command-line with the exelist
-            command_list = self.get_exelist() + commands.to_native()
+            command_list = self.get_exelist(ccache=not no_ccache) + commands.to_native()
             mlog.debug('Running compile:')
             mlog.debug('Working directory: ', tmpdirname)
             mlog.debug('Command line: ', ' '.join(command_list), '\n')
@@ -969,7 +990,8 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_lto_compile_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
         return []
 
-    def get_lto_link_args(self, *, threads: int = 0, mode: str = 'default') -> T.List[str]:
+    def get_lto_link_args(self, *, threads: int = 0, mode: str = 'default',
+                          thinlto_cache_dir: T.Optional[str] = None) -> T.List[str]:
         return self.linker.get_lto_args()
 
     def sanitizer_compile_args(self, value: str) -> T.List[str]:
@@ -1035,6 +1057,9 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
 
     def get_preprocess_only_args(self) -> T.List[str]:
         raise EnvironmentException('This compiler does not have a preprocessor')
+
+    def get_preprocess_to_file_args(self) -> T.List[str]:
+        return self.get_preprocess_only_args()
 
     def get_default_include_dirs(self) -> T.List[str]:
         # TODO: This is a candidate for returning an immutable list
@@ -1124,7 +1149,7 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def get_include_args(self, path: str, is_system: bool) -> T.List[str]:
         return []
 
-    def depfile_for_object(self, objfile: str) -> str:
+    def depfile_for_object(self, objfile: str) -> T.Optional[str]:
         return objfile + '.' + self.get_depfile_suffix()
 
     def get_depfile_suffix(self) -> str:
@@ -1276,6 +1301,10 @@ class Compiler(HoldableObject, metaclass=abc.ABCMeta):
     def needs_static_linker(self) -> bool:
         raise NotImplementedError(f'There is no static linker for {self.language}')
 
+    def get_preprocessor(self) -> Compiler:
+        """Get compiler's preprocessor.
+        """
+        raise EnvironmentException(f'{self.get_id()} does not support preprocessor')
 
 def get_global_options(lang: str,
                        comp: T.Type[Compiler],

@@ -67,28 +67,28 @@ Options that are labeled "per machine" in the table are set per
 machine. See the [specifying options per
 machine](#specifying-options-per-machine) section for details.
 
-| Option                               | Default value | Description                                                    | Is per machine | Is per subproject |
-| ------                               | ------------- | -----------                                                    | -------------- | ----------------- |
+| Option                                 | Default value | Description                                                    | Is per machine | Is per subproject |
+| -------------------------------------- | ------------- | -----------                                                    | -------------- | ----------------- |
 | auto_features {enabled, disabled, auto} | auto       | Override value of all 'auto' features                          | no             | no                |
 | backend {ninja, vs,<br>vs2010, vs2012, vs2013, vs2015, vs2017, vs2019, vs2022, xcode} | ninja | Backend to use        | no             | no                |
 | buildtype {plain, debug,<br>debugoptimized, release, minsize, custom} | debug |  Build type to use                    | no             | no                |
-| debug                                | true          | Enable debug symbols and other information                     | no             | no                |
+| debug                                  | true          | Enable debug symbols and other information                     | no             | no                |
 | default_library {shared, static, both} | shared      | Default library type                                           | no             | yes               |
-| errorlogs                            | true          | Whether to print the logs from failing tests.                  | no             | no                |
-| install_umask {preserve, 0000-0777}  | 022           | Default umask to apply on permissions of installed files       | no             | no                |
-| layout {mirror,flat}                 | mirror        | Build directory layout                                         | no             | no                |
-| optimization {0, g, 1, 2, 3, s}      | 0             | Optimization level                                             | no             | no                |
-| pkg_config_path {OS separated path}  | ''            | Additional paths for pkg-config to search before builtin paths | yes            | no                |
-| prefer_static                        | false         | Whether to try static linking before shared linking            | no             | no                |
-| cmake_prefix_path                    | []            | Additional prefixes for cmake to search before builtin paths   | yes            | no                |
-| stdsplit                             | true          | Split stdout and stderr in test logs                           | no             | no                |
-| strip                                | false         | Strip targets on install                                       | no             | no                |
-| unity {on, off, subprojects}         | off           | Unity build                                                    | no             | no                |
-| unity_size {>=2}                     | 4             | Unity file block size                                          | no             | no                |
-| warning_level {0, 1, 2, 3}           | 1             | Set the warning level. From 0 = none to 3 = highest            | no             | yes               |
-| werror                               | false         | Treat warnings as errors                                       | no             | yes               |
+| errorlogs                              | true          | Whether to print the logs from failing tests.                  | no             | no                |
+| install_umask {preserve, 0000-0777}    | 022           | Default umask to apply on permissions of installed files       | no             | no                |
+| layout {mirror,flat}                   | mirror        | Build directory layout                                         | no             | no                |
+| optimization {plain, 0, g, 1, 2, 3, s} | 0             | Optimization level                                             | no             | no                |
+| pkg_config_path {OS separated path}    | ''            | Additional paths for pkg-config to search before builtin paths | yes            | no                |
+| prefer_static                          | false         | Whether to try static linking before shared linking            | no             | no                |
+| cmake_prefix_path                      | []            | Additional prefixes for cmake to search before builtin paths   | yes            | no                |
+| stdsplit                               | true          | Split stdout and stderr in test logs                           | no             | no                |
+| strip                                  | false         | Strip targets on install                                       | no             | no                |
+| unity {on, off, subprojects}           | off           | Unity build                                                    | no             | no                |
+| unity_size {>=2}                       | 4             | Unity file block size                                          | no             | no                |
+| warning_level {0, 1, 2, 3, everything} | 1             | Set the warning level. From 0 = none to everything = highest   | no             | yes               |
+| werror                                 | false         | Treat warnings as errors                                       | no             | yes               |
 | wrap_mode {default, nofallback,<br>nodownload, forcefallback, nopromote} | default | Wrap mode to use                 | no             | no                |
-| force_fallback_for                   | []            | Force fallback for those dependencies                          | no             | no                |
+| force_fallback_for                     | []            | Force fallback for those dependencies                          | no             | no                |
 
 <a name="build-type-options"></a> For setting optimization levels and
 toggling debug, you can either set the `buildtype` option, or you can
@@ -100,7 +100,7 @@ the two-way mapping:
 
 | buildtype      | debug | optimization |
 | ---------      | ----- | ------------ |
-| plain          | false | 0            |
+| plain          | false | plain        |
 | debug          | true  | 0            |
 | debugoptimized | true  | 2            |
 | release        | false | 3            |
@@ -121,30 +121,32 @@ no options.
 The following options are available. Note that they may not be
 available on all platforms or with all compilers:
 
-| Option        | Default value  | Possible values                                                  | Description                                                                   |
-|---------------|----------------|------------------------------------------------------------------|-------------------------------------------------------------------------------|
-| b_asneeded    | true           | true, false                                                      | Use -Wl,--as-needed when linking                                              |
-| b_bitcode     | false          | true, false                                                      | Embed Apple bitcode, see below                                                |
-| b_colorout    | always         | auto, always, never                                              | Use colored output                                                            |
-| b_coverage    | false          | true, false                                                      | Enable coverage tracking                                                      |
-| b_lundef      | true           | true, false                                                      | Don't allow undefined symbols when linking                                    |
-| b_lto         | false          | true, false                                                      | Use link time optimization                                                    |
-| b_lto_threads | 0              | Any integer*                                                     | Use multiple threads for lto. *(Added in 0.57.0)*                             |
-| b_lto_mode    | default        | default, thin                                                    | Select between lto modes, thin and default. *(Added in 0.57.0)*               |
-| b_ndebug      | false          | true, false, if-release                                          | Disable asserts                                                               |
-| b_pch         | true           | true, false                                                      | Use precompiled headers                                                       |
-| b_pgo         | off            | off, generate, use                                               | Use profile guided optimization                                               |
-| b_sanitize    | none           | see below                                                        | Code sanitizer to use                                                         |
-| b_staticpic   | true           | true, false                                                      | Build static libraries as position independent                                |
-| b_pie         | false          | true, false                                                      | Build position-independent executables (since 0.49.0)                         |
-| b_vscrt       | from_buildtype | none, md, mdd, mt, mtd, from_buildtype, static_from_buildtype    | VS runtime library to use (since 0.48.0) (static_from_buildtype since 0.56.0) |
+| Option              | Default value        | Possible values                                               | Description                                                                    |
+|---------------------|----------------------|---------------------------------------------------------------|--------------------------------------------------------------------------------|
+| b_asneeded          | true                 | true, false                                                   | Use -Wl,--as-needed when linking                                               |
+| b_bitcode           | false                | true, false                                                   | Embed Apple bitcode, see below                                                 |
+| b_colorout          | always               | auto, always, never                                           | Use colored output                                                             |
+| b_coverage          | false                | true, false                                                   | Enable coverage tracking                                                       |
+| b_lundef            | true                 | true, false                                                   | Don't allow undefined symbols when linking                                     |
+| b_lto               | false                | true, false                                                   | Use link time optimization                                                     |
+| b_lto_threads       | 0                    | Any integer*                                                  | Use multiple threads for lto. *(Added in 0.57.0)*                              |
+| b_lto_mode          | default              | default, thin                                                 | Select between lto modes, thin and default. *(Added in 0.57.0)*                |
+| b_thinlto_cache     | false                | true, false                                                   | Enable LLVM's ThinLTO cache for faster incremental builds. *(Added in 0.64.0)* |
+| b_thinlto_cache_dir | (Internal build dir) | true, false                                                   | Specify where to store ThinLTO cache objects. *(Added in 0.64.0)*              |
+| b_ndebug            | false                | true, false, if-release                                       | Disable asserts                                                                |
+| b_pch               | true                 | true, false                                                   | Use precompiled headers                                                        |
+| b_pgo               | off                  | off, generate, use                                            | Use profile guided optimization                                                |
+| b_sanitize          | none                 | see below                                                     | Code sanitizer to use                                                          |
+| b_staticpic         | true                 | true, false                                                   | Build static libraries as position independent                                 |
+| b_pie               | false                | true, false                                                   | Build position-independent executables (since 0.49.0)                          |
+| b_vscrt             | from_buildtype       | none, md, mdd, mt, mtd, from_buildtype, static_from_buildtype | VS runtime library to use (since 0.48.0) (static_from_buildtype since 0.56.0)  |
 
 The value of `b_sanitize` can be one of: `none`, `address`, `thread`,
 `undefined`, `memory`, `leak`, `address,undefined`, but note that some
 compilers might not support all of them. For example Visual Studio
 only supports the address sanitizer.
 
-* < 0 means disable, == 0 means automatic selection, > 0 sets a specific number to use
+\* < 0 means disable, == 0 means automatic selection, > 0 sets a specific number to use
 
 LLVM supports `thin` lto, for more discussion see [LLVM's documentation](https://clang.llvm.org/docs/ThinLTO.html)
 
@@ -221,45 +223,45 @@ c/c++ compiler supports this option.
 
 Since *0.63.0* all compiler options can be set per subproject, see
 [here](#specifying-options-per-subproject) for details on how the default value
-is inherited from main project. This is useful for example when the main project
-requires C++11 but a subproject requires C++14. The `cpp_std` value from
-subproject's `default_options` is now respected.
+is inherited from the main project. This is useful, for example, when the main
+project requires C++11, but a subproject requires C++14. The `cpp_std` value
+from the subproject's `default_options` is now respected.
 
 ## Specifying options per machine
 
 Since *0.51.0*, some options are specified per machine rather than
 globally for all machine configurations. Prefixing the option with
-`build.` just affects the build machine configuration, while
-unprefixed just affects the host machine configuration, respectively.
+`build.` only affects the build machine configuration, while leaving it
+unprefixed only affects the host machine configuration.
 For example:
 
  - `build.pkg_config_path` controls the paths pkg-config will search
-   for just `native: true` dependencies (build machine).
+   for `native: true` (build machine) dependencies.
 
  - `pkg_config_path` controls the paths pkg-config will search for
-   just `native: false` dependencies (host machine).
+   `native: false` (host machine) dependencies.
 
-This is useful for cross builds. In the native builds, build = host,
-and the unprefixed option alone will suffice.
+This is useful for cross builds. In native builds, the build and host
+machines are the same, and the unprefixed option alone will suffice.
 
-Prior to *0.51.0*, these options just effected native builds when
-specified on the command line, as there was no `build.` prefix.
+Prior to *0.51.0*, these options only affected native builds when
+specified on the command line as there was no `build.` prefix.
 Similarly named fields in the `[properties]` section of the cross file
-would effect cross compilers, but the code paths were fairly different
+would affect cross compilers, but the code paths were fairly different,
 allowing differences in behavior to crop out.
 
 ## Specifying options per subproject
 
 Since *0.54.0* `default_library` and `werror` built-in options can be
-defined per subproject. This is useful for example when building
-shared libraries in the main project, but static link a subproject, or
-when the main project must build with no warnings but some subprojects
+defined per subproject. This is useful, for example, when building
+shared libraries in the main project and statically linking a subproject,
+or when the main project must build with no warnings but some subprojects
 cannot.
 
-Most of the time this would be used either by the parent project by
+Most of the time, this would be used either in the parent project by
 setting subproject's default_options (e.g. `subproject('foo',
-default_options: 'default_library=static')`), or by the user using the
-command line `-Dfoo:default_library=static`.
+default_options: 'default_library=static')`), or by the user through the
+command line: `-Dfoo:default_library=static`.
 
 The value is overridden in this order:
 - Value from parent project
@@ -267,12 +269,13 @@ The value is overridden in this order:
 - Value from subproject() default_options if set
 - Value from command line if set
 
-Since 0.56.0 `warning_level` can also be defined per subproject.
+Since *0.56.0* `warning_level` can also be defined per subproject.
 
 ## Module options
 
-Some Meson modules have built-in options. They can be set by prefixing the option
-name with the module name: `-D<module>.<option>=<value>` (e.g. `-Dpython.platlibdir=/foo`).
+Some Meson modules have built-in options. They can be set by prefixing the
+option with the module's name:
+`-D<module>.<option>=<value>` (e.g. `-Dpython.platlibdir=/foo`).
 
 ### Pkgconfig module
 
@@ -281,18 +284,19 @@ name with the module name: `-D<module>.<option>=<value>` (e.g. `-Dpython.platlib
 | relocatable | false         | true, false     | Generate the pkgconfig files as relocatable (Since 0.63.0) |
 
 *Since 0.63.0* The `pkgconfig.relocatable` option is used by the
-pkgconfig module, namely [`pkg.generate()`](Pkgconfig-module.md) and affect how the
-`prefix` in the generated pkgconfig file is set (not to be confused
-with the [install prefix](#directories)). When it is `true` the `prefix` will be
-relative to the `install_dir`. This allows the pkgconfig file to be
-moved around and still work, as long as the relative path is not
-broken. In general this allows for the whole installed package to be
-placed anywhere on the system and still work as a dependency. When it
-is set to `false` the `prefix` will be the same as the install prefix.
+pkgconfig module–namely [`pkg.generate()`](Pkgconfig-module.md)–and
+affects how the `prefix` (not to be confused with the
+[install prefix](#directories)) in the generated pkgconfig file is set.
+When it is `true`, the `prefix` will be relative to the `install_dir`-this
+allows the pkgconfig file to be moved around and still work, as long
+as the relative path is not broken. In general, this allows for the whole
+installed package to be placed anywhere on the system and still work as a
+dependency. When it is set to `false`, the `prefix` will be the same as
+the install prefix.
 
 An error will be raised if `pkgconfig.relocatable` is `true` and the
 `install_dir` for a generated pkgconfig file points outside the
-install prefix. For example if the install prefix is `/usr` and the
+install prefix. For example: if the install prefix is `/usr` and the
 `install_dir` for a pkgconfig file is `/var/lib/pkgconfig`.
 
 ### Python module
@@ -303,13 +307,13 @@ install prefix. For example if the install prefix is `/usr` and the
 | platlibdir       |               | Directory path              | Directory for site-specific, platform-specific files (Since 0.60.0) |
 | purelibdir       |               | Directory path              | Directory for site-specific, non-platform-specific files  (Since 0.60.0) |
 
-*Since 0.60.0* `python.platlibdir` and `python.purelibdir` options are used by
-python module methods `python.install_sources()` and `python.get_install_dir()`.
-By default Meson tries to detect the correct installation path, but make them
-relative to the installation `prefix`, which will often result in installed python
-modules to not be found by the interpreter unless `prefix` is `/usr` on Linux,
-or for example `C:\Python39` on Windows. These options can be absolute paths
-outside of `prefix`.
+*Since 0.60.0* The `python.platlibdir` and `python.purelibdir` options are used
+by the python module methods `python.install_sources()` and
+`python.get_install_dir()`; Meson tries to detect the correct installation paths
+and make them relative to the installation `prefix` by default which will often
+result in the interpreter not finding the installed python modules unless
+`prefix` is `/usr` on Linux, or, for instance, `C:\Python39` on Windows. These
+options can be absolute paths outside of `prefix`.
 
 *Since 0.62.0* The `python.install_env` option is used to detect the correct
 installation path. Setting to `system` will avoid making the paths relative to

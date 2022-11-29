@@ -28,6 +28,7 @@ from .mixins.ti import TICompiler
 from .mixins.arm import ArmCompiler, ArmclangCompiler
 from .mixins.visualstudio import MSVCCompiler, ClangClCompiler
 from .mixins.gnu import GnuCompiler
+from .mixins.gnu import gnu_common_warning_args, gnu_c_warning_args
 from .mixins.intel import IntelGnuLikeCompiler, IntelVisualStudioLikeCompiler
 from .mixins.clang import ClangCompiler
 from .mixins.elbrus import ElbrusCompiler
@@ -63,12 +64,12 @@ class CCompiler(CLikeCompiler, Compiler):
 
     language = 'c'
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
         # If a child ObjC or CPP class has already set it, don't set it ourselves
-        Compiler.__init__(self, exelist, version, for_machine, info,
+        Compiler.__init__(self, ccache, exelist, version, for_machine, info,
                           is_cross=is_cross, full_version=full_version, linker=linker)
         CLikeCompiler.__init__(self, exe_wrapper)
 
@@ -141,18 +142,19 @@ class _ClangCStds(CompilerMixinBase):
 
 class ClangCCompiler(_ClangCStds, ClangCompiler, CCompiler):
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross, info, exe_wrapper, linker=linker, full_version=full_version)
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross, info, exe_wrapper, linker=linker, full_version=full_version)
         ClangCompiler.__init__(self, defines)
         default_warn_args = ['-Wall', '-Winvalid-pch']
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra', '-Wpedantic']}
+                          '3': default_warn_args + ['-Wextra', '-Wpedantic'],
+                          'everything': ['-Weverything']}
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = super().get_options()
@@ -205,14 +207,14 @@ class EmscriptenCCompiler(EmscriptenMixin, ClangCCompiler):
 
     id = 'emscripten'
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  full_version: T.Optional[str] = None):
         if not is_cross:
             raise MesonException('Emscripten compiler can only be used for cross compilation.')
-        ClangCCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        ClangCCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                                 info, exe_wrapper=exe_wrapper, linker=linker,
                                 defines=defines, full_version=full_version)
 
@@ -222,18 +224,19 @@ class ArmclangCCompiler(ArmclangCompiler, CCompiler):
     Keil armclang
     '''
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         ArmclangCompiler.__init__(self)
         default_warn_args = ['-Wall', '-Winvalid-pch']
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra', '-Wpedantic']}
+                          '3': default_warn_args + ['-Wextra', '-Wpedantic'],
+                          'everything': ['-Weverything']}
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = CCompiler.get_options(self)
@@ -258,12 +261,12 @@ class GnuCCompiler(GnuCompiler, CCompiler):
     _C2X_VERSION = '>=9.0.0'
     _INVALID_PCH_VERSION = ">=3.4.0"
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross, info, exe_wrapper, linker=linker, full_version=full_version)
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross, info, exe_wrapper, linker=linker, full_version=full_version)
         GnuCompiler.__init__(self, defines)
         default_warn_args = ['-Wall']
         if version_compare(self.version, self._INVALID_PCH_VERSION):
@@ -271,7 +274,10 @@ class GnuCCompiler(GnuCompiler, CCompiler):
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra', '-Wpedantic']}
+                          '3': default_warn_args + ['-Wextra', '-Wpedantic'],
+                          'everything': (default_warn_args + ['-Wextra', '-Wpedantic'] +
+                                         self.supported_warn_args(gnu_common_warning_args) +
+                                         self.supported_warn_args(gnu_c_warning_args))}
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = CCompiler.get_options(self)
@@ -316,11 +322,11 @@ class GnuCCompiler(GnuCompiler, CCompiler):
 
 
 class PGICCompiler(PGICompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         PGICompiler.__init__(self)
 
@@ -329,22 +335,22 @@ class NvidiaHPC_CCompiler(PGICompiler, CCompiler):
 
     id = 'nvidia_hpc'
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         PGICompiler.__init__(self)
 
 
 class ElbrusCCompiler(ElbrusCompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  defines: T.Optional[T.Dict[str, str]] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         ElbrusCompiler.__init__(self)
 
@@ -377,19 +383,20 @@ class ElbrusCCompiler(ElbrusCompiler, CCompiler):
 
 
 class IntelCCompiler(IntelGnuLikeCompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice, is_cross: bool,
                  info: 'MachineInfo', exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         IntelGnuLikeCompiler.__init__(self)
         self.lang_header = 'c-header'
-        default_warn_args = ['-Wall', '-w3', '-diag-disable:remark']
+        default_warn_args = ['-Wall', '-w3']
         self.warn_args = {'0': [],
-                          '1': default_warn_args,
-                          '2': default_warn_args + ['-Wextra'],
-                          '3': default_warn_args + ['-Wextra']}
+                          '1': default_warn_args + ['-diag-disable:remark'],
+                          '2': default_warn_args + ['-Wextra', '-diag-disable:remark'],
+                          '3': default_warn_args + ['-Wextra', '-diag-disable:remark'],
+                          'everything': default_warn_args + ['-Wextra']}
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
         opts = CCompiler.get_options(self)
@@ -406,6 +413,11 @@ class IntelCCompiler(IntelGnuLikeCompiler, CCompiler):
         if std.value != 'none':
             args.append('-std=' + std.value)
         return args
+
+
+class IntelLLVMCCompiler(ClangCCompiler):
+
+    id = 'intel-llvm'
 
 
 class VisualStudioLikeCCompilerMixin(CompilerMixinBase):
@@ -437,12 +449,12 @@ class VisualStudioCCompiler(MSVCCompiler, VisualStudioLikeCCompilerMixin, CCompi
     _C11_VERSION = '>=19.28'
     _C17_VERSION = '>=19.28'
 
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo', target: str,
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker,
                            full_version=full_version)
         MSVCCompiler.__init__(self, target)
@@ -486,7 +498,7 @@ class ClangClCCompiler(_ClangCStds, ClangClCompiler, VisualStudioLikeCCompilerMi
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, [], exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker,
                            full_version=full_version)
         ClangClCompiler.__init__(self, target)
@@ -508,7 +520,7 @@ class IntelClCCompiler(IntelVisualStudioLikeCompiler, VisualStudioLikeCCompilerM
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, [], exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker,
                            full_version=full_version)
         IntelVisualStudioLikeCompiler.__init__(self, target)
@@ -530,13 +542,18 @@ class IntelClCCompiler(IntelVisualStudioLikeCompiler, VisualStudioLikeCCompilerM
         return args
 
 
+class IntelLLVMClCCompiler(IntelClCCompiler):
+
+    id = 'intel-llvm-cl'
+
+
 class ArmCCompiler(ArmCompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker,
                            full_version=full_version)
         ArmCompiler.__init__(self)
@@ -557,12 +574,12 @@ class ArmCCompiler(ArmCompiler, CCompiler):
 
 
 class CcrxCCompiler(CcrxCompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         CcrxCompiler.__init__(self)
 
@@ -608,12 +625,12 @@ class CcrxCCompiler(CcrxCompiler, CCompiler):
 
 
 class Xc16CCompiler(Xc16Compiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         Xc16Compiler.__init__(self)
 
@@ -653,12 +670,12 @@ class Xc16CCompiler(Xc16Compiler, CCompiler):
         return ['-I' + path]
 
 class CompCertCCompiler(CompCertCompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         CompCertCompiler.__init__(self)
 
@@ -686,12 +703,12 @@ class CompCertCCompiler(CompCertCompiler, CCompiler):
         return ['-I' + path]
 
 class TICCompiler(TICompiler, CCompiler):
-    def __init__(self, exelist: T.List[str], version: str, for_machine: MachineChoice,
+    def __init__(self, ccache: T.List[str], exelist: T.List[str], version: str, for_machine: MachineChoice,
                  is_cross: bool, info: 'MachineInfo',
                  exe_wrapper: T.Optional['ExternalProgram'] = None,
                  linker: T.Optional['DynamicLinker'] = None,
                  full_version: T.Optional[str] = None):
-        CCompiler.__init__(self, exelist, version, for_machine, is_cross,
+        CCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                            info, exe_wrapper, linker=linker, full_version=full_version)
         TICompiler.__init__(self)
 

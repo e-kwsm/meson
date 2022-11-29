@@ -62,6 +62,7 @@ vs64_instruction_set_args = {
 }  # T.Dicst[str, T.Optional[T.List[str]]]
 
 msvc_optimization_args = {
+    'plain': [],
     '0': ['/Od'],
     'g': [], # No specific flag to optimize debugging, /Zi or /ZI will create debug information
     '1': ['/O1'],
@@ -109,6 +110,7 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
         '1': ['/W2'],
         '2': ['/W3'],
         '3': ['/W4'],
+        'everything': ['/Wall'],
     }  # type: T.Dict[str, T.List[str]]
 
     INVOKES_LINKER = False
@@ -158,6 +160,9 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
     def get_preprocess_only_args(self) -> T.List[str]:
         return ['/EP']
 
+    def get_preprocess_to_file_args(self) -> T.List[str]:
+        return ['/EP', '/P']
+
     def get_compile_only_args(self) -> T.List[str]:
         return ['/c']
 
@@ -172,6 +177,8 @@ class VisualStudioLikeCompiler(Compiler, metaclass=abc.ABCMeta):
         return ['/fsanitize=address']
 
     def get_output_args(self, target: str) -> T.List[str]:
+        if self.mode == 'PREPROCESSOR':
+            return ['/Fi' + target]
         if target.endswith('.exe'):
             return ['/Fe' + target]
         return ['/Fo' + target]

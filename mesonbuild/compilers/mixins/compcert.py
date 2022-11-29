@@ -40,6 +40,7 @@ ccomp_buildtype_args = {
 }  # type: T.Dict[str, T.List[str]]
 
 ccomp_optimization_args = {
+    'plain': [],
     '0': ['-O0'],
     'g': ['-O0'],
     '1': ['-O1'],
@@ -71,7 +72,8 @@ class CompCertCompiler(Compiler):
         self.warn_args = {'0': [],
                           '1': default_warn_args,
                           '2': default_warn_args + [],
-                          '3': default_warn_args + []}  # type: T.Dict[str, T.List[str]]
+                          '3': default_warn_args + [],
+                          'everything': default_warn_args + []}  # type: T.Dict[str, T.List[str]]
 
     def get_always_args(self) -> T.List[str]:
         return []

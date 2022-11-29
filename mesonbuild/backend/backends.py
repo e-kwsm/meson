@@ -23,6 +23,7 @@ import json
 import os
 import pickle
 import re
+import shutil
 import typing as T
 import hashlib
 
@@ -34,7 +35,8 @@ from .. import mlog
 from ..compilers import LANGUAGES_USING_LDFLAGS, detect
 from ..mesonlib import (
     File, MachineChoice, MesonException, OrderedSet,
-    classify_unity_sources, OptionKey, join_args
+    classify_unity_sources, OptionKey, join_args,
+    ExecutableSerialisation
 )
 
 if T.TYPE_CHECKING:
@@ -47,6 +49,8 @@ if T.TYPE_CHECKING:
     from ..mesonlib import FileMode, FileOrString
 
     from typing_extensions import TypedDict
+
+    _ALL_SOURCES_TYPE = T.List[T.Union[File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList]]
 
     class TargetIntrospectionData(TypedDict):
 
@@ -185,27 +189,6 @@ class SubdirInstallData(InstallDataBase):
         super().__init__(path, install_path, install_path_name, install_mode, subproject, tag, data_type)
         self.exclude = exclude
 
-@dataclass(eq=False)
-class ExecutableSerialisation:
-
-    # XXX: should capture and feed default to False, instead of None?
-
-    cmd_args: T.List[str]
-    env: T.Optional[build.EnvironmentVariables] = None
-    exe_wrapper: T.Optional['programs.ExternalProgram'] = None
-    workdir: T.Optional[str] = None
-    extra_paths: T.Optional[T.List] = None
-    capture: T.Optional[bool] = None
-    feed: T.Optional[bool] = None
-    tag: T.Optional[str] = None
-    verbose: bool = False
-
-    def __post_init__(self) -> None:
-        if self.exe_wrapper is not None:
-            assert isinstance(self.exe_wrapper, programs.ExternalProgram)
-        self.pickled = False
-        self.skip_if_destdir = False
-        self.subproject = ''
 
 @dataclass(eq=False)
 class TestSerialisation:
@@ -604,15 +587,31 @@ class Backend:
         if any('\n' in c for c in es.cmd_args):
             reasons.append('because command contains newlines')
 
-        if es.env and es.env.varnames:
+        if env and env.varnames:
             reasons.append('to set env')
 
+        # force_serialize passed to this function means that the VS backend has
+        # decided it absolutely cannot use real commands. This is "always",
+        # because it's not clear what will work (other than compilers) and so
+        # we don't bother to handle a variety of common cases that probably do
+        # work.
+        #
+        # It's also overridden for a few conditions that can't be handled
+        # inside a command line
+
+        can_use_env = not force_serialize
         force_serialize = force_serialize or bool(reasons)
 
         if capture:
             reasons.append('to capture output')
         if feed:
             reasons.append('to feed input')
+
+        if can_use_env and reasons == ['to set env'] and shutil.which('env'):
+            envlist = []
+            for k, v in env.get_env({}).items():
+                envlist.append(f'{k}={v}')
+            return ['env'] + envlist + es.cmd_args, ', '.join(reasons)
 
         if not force_serialize:
             if not capture and not feed:
@@ -795,6 +794,8 @@ class Backend:
 
     def object_filename_from_source(self, target: build.BuildTarget, source: 'FileOrString') -> str:
         assert isinstance(source, mesonlib.File)
+        if isinstance(target, build.CompileTarget):
+            return target.sources_map[source]
         build_dir = self.environment.get_build_dir()
         rel_src = source.rel_to_builddir(self.build_to_src)
 
@@ -839,7 +840,7 @@ class Backend:
         # Filter out headers and all non-source files
         sources: T.List['FileOrString'] = []
         for s in raw_sources:
-            if self.environment.is_source(s) and not self.environment.is_header(s):
+            if self.environment.is_source(s):
                 sources.append(s)
             elif self.environment.is_object(s):
                 result.append(s.relative_name())
@@ -1540,6 +1541,10 @@ class Backend:
             return 'devel'
         elif localedir in dest_path.parents:
             return 'i18n'
+        elif 'installed-tests' in dest_path.parts:
+            return 'tests'
+        elif 'systemtap' in dest_path.parts:
+            return 'systemtap'
         mlog.debug('Failed to guess install tag for', dest_path)
         return None
 
@@ -1550,14 +1555,14 @@ class Backend:
             outdirs, install_dir_names, custom_install_dir = t.get_install_dir()
             # Sanity-check the outputs and install_dirs
             num_outdirs, num_out = len(outdirs), len(t.get_outputs())
-            if num_outdirs != 1 and num_outdirs != num_out:
+            if num_outdirs not in {1, num_out}:
                 m = 'Target {!r} has {} outputs: {!r}, but only {} "install_dir"s were found.\n' \
                     "Pass 'false' for outputs that should not be installed and 'true' for\n" \
                     'using the default installation directory for an output.'
                 raise MesonException(m.format(t.name, num_out, t.get_outputs(), num_outdirs))
             assert len(t.install_tag) == num_out
             install_mode = t.get_custom_install_mode()
-            # because mypy get's confused type narrowing in lists
+            # because mypy gets confused type narrowing in lists
             first_outdir = outdirs[0]
             first_outdir_name = install_dir_names[0]
 
@@ -1649,6 +1654,7 @@ class Backend:
                 if num_outdirs == 1 and num_out > 1:
                     if first_outdir is not False:
                         for output, tag in zip(t.get_outputs(), t.install_tag):
+                            tag = tag or self.guess_install_tag(output, first_outdir)
                             f = os.path.join(self.get_target_dir(t), output)
                             i = TargetInstallData(f, first_outdir, first_outdir_name,
                                                   False, {}, set(), None, install_mode,
@@ -1660,6 +1666,7 @@ class Backend:
                         # User requested that we not install this output
                         if outdir is False:
                             continue
+                        tag = tag or self.guess_install_tag(output, outdir)
                         f = os.path.join(self.get_target_dir(t), output)
                         i = TargetInstallData(f, outdir, outdir_name,
                                               False, {}, set(), None, install_mode,
@@ -1669,6 +1676,9 @@ class Backend:
 
     def generate_custom_install_script(self, d: InstallData) -> None:
         d.install_scripts = self.build.install_scripts
+        for i in d.install_scripts:
+            if not i.tag:
+                mlog.debug('Failed to guess install tag for install script:', ' '.join(i.cmd_args))
 
     def generate_header_install(self, d: InstallData) -> None:
         incroot = self.environment.get_includedir()
@@ -1718,7 +1728,8 @@ class Backend:
     def generate_emptydir_install(self, d: InstallData) -> None:
         emptydir: T.List[build.EmptyDir] = self.build.get_emptydir()
         for e in emptydir:
-            i = InstallEmptyDir(e.path, e.install_mode, e.subproject, e.install_tag)
+            tag = e.install_tag or self.guess_install_tag(e.path)
+            i = InstallEmptyDir(e.path, e.install_mode, e.subproject, tag)
             d.emptydir.append(i)
 
     def generate_data_install(self, d: InstallData) -> None:
@@ -1747,7 +1758,8 @@ class Backend:
             assert isinstance(l, build.SymlinkData)
             install_dir = l.install_dir
             name_abs = os.path.join(install_dir, l.name)
-            s = InstallSymlinkData(l.target, name_abs, install_dir, l.subproject, l.install_tag)
+            tag = l.install_tag or self.guess_install_tag(name_abs)
+            s = InstallSymlinkData(l.target, name_abs, install_dir, l.subproject, tag)
             d.symlinks.append(s)
 
     def generate_subdir_install(self, d: InstallData) -> None:
@@ -1767,7 +1779,8 @@ class Backend:
             if not sd.strip_directory:
                 dst_dir = os.path.join(dst_dir, os.path.basename(src_dir))
                 dst_name = os.path.join(dst_name, os.path.basename(src_dir))
-            i = SubdirInstallData(src_dir, dst_dir, dst_name, sd.install_mode, sd.exclude, sd.subproject, sd.install_tag)
+            tag = sd.install_tag or self.guess_install_tag(os.path.join(sd.install_dir, 'dummy'))
+            i = SubdirInstallData(src_dir, dst_dir, dst_name, sd.install_mode, sd.exclude, sd.subproject, tag)
             d.install_subdirs.append(i)
 
     def get_introspection_data(self, target_id: str, target: build.Target) -> T.List['TargetIntrospectionData']:
@@ -1795,7 +1808,7 @@ class Backend:
                     source_list += [os.path.join(self.source_dir, j)]
                 elif isinstance(j, (build.CustomTarget, build.BuildTarget)):
                     source_list += [os.path.join(self.build_dir, j.get_subdir(), o) for o in j.get_outputs()]
-            source_list = list(map(lambda x: os.path.normpath(x), source_list))
+            source_list = [os.path.normpath(s) for s in source_list]
 
             compiler: T.List[str] = []
             if isinstance(target, build.CustomTarget):
@@ -1861,3 +1874,28 @@ class Backend:
             else:
                 env.prepend('PATH', list(extra_paths))
         return env
+
+    def compiler_to_generator(self, target: build.BuildTarget,
+                              compiler: 'Compiler',
+                              sources: _ALL_SOURCES_TYPE,
+                              output_templ: str) -> build.GeneratedList:
+        '''
+        Some backends don't support custom compilers. This is a convenience
+        method to convert a Compiler to a Generator.
+        '''
+        exelist = compiler.get_exelist()
+        exe = programs.ExternalProgram(exelist[0])
+        args = exelist[1:]
+        # FIXME: There are many other args missing
+        commands = self.generate_basic_compiler_args(target, compiler)
+        commands += compiler.get_dependency_gen_args('@OUTPUT@', '@DEPFILE@')
+        commands += compiler.get_output_args('@OUTPUT@')
+        commands += compiler.get_compile_only_args() + ['@INPUT@']
+        commands += self.get_source_dir_include_args(target, compiler)
+        commands += self.get_build_dir_include_args(target, compiler)
+        generator = build.Generator(exe, args + commands.to_native(), [output_templ], depfile='@PLAINNAME@.d')
+        return generator.process_files(sources, self.interpreter)
+
+    def compile_target_to_generator(self, target: build.CompileTarget) -> build.GeneratedList:
+        all_sources = T.cast('_ALL_SOURCES_TYPE', target.sources) + T.cast('_ALL_SOURCES_TYPE', target.generated)
+        return self.compiler_to_generator(target, target.compiler, all_sources, target.output_templ)

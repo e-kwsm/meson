@@ -27,6 +27,7 @@ import itertools
 import os
 import re
 import subprocess
+import copy
 import typing as T
 from pathlib import Path
 
@@ -145,6 +146,8 @@ class CLikeCompiler(Compiler):
             self.exe_wrapper = None
         else:
             self.exe_wrapper = exe_wrapper
+        # Lazy initialized in get_preprocessor()
+        self.preprocessor: T.Optional[Compiler] = None
 
     def compiler_args(self, args: T.Optional[T.Iterable[str]] = None) -> CLikeCompilerArgs:
         # This is correct, mypy just doesn't understand co-operative inheritance
@@ -175,9 +178,6 @@ class CLikeCompiler(Compiler):
 
     def get_depfile_suffix(self) -> str:
         return 'd'
-
-    def get_exelist(self) -> T.List[str]:
-        return self.exelist.copy()
 
     def get_preprocess_only_args(self) -> T.List[str]:
         return ['-E', '-P']
@@ -285,7 +285,7 @@ class CLikeCompiler(Compiler):
 
     def _sanity_check_impl(self, work_dir: str, environment: 'Environment',
                            sname: str, code: str) -> None:
-        mlog.debug('Sanity testing ' + self.get_display_language() + ' compiler:', ' '.join(self.exelist))
+        mlog.debug('Sanity testing ' + self.get_display_language() + ' compiler:', mesonlib.join_args(self.exelist))
         mlog.debug(f'Is cross compiler: {self.is_cross!s}.')
 
         source_name = os.path.join(work_dir, sname)
@@ -294,7 +294,7 @@ class CLikeCompiler(Compiler):
         if self.is_cross:
             binname += '_cross'
             if self.exe_wrapper is None:
-                # Linking cross built apps is painful. You can't really
+                # Linking cross built C/C++ apps is painful. You can't really
                 # tell if you should use -nostdlib or not and for example
                 # on OSX the compiler binary is the same but you need
                 # a ton of compiler flags to differentiate between
@@ -314,7 +314,7 @@ class CLikeCompiler(Compiler):
         # after which all further arguments will be passed directly to the linker
         cmdlist = self.exelist + [sname] + self.get_output_args(binname) + extra_flags
         pc, stdo, stde = mesonlib.Popen_safe(cmdlist, cwd=work_dir)
-        mlog.debug('Sanity check compiler command line:', ' '.join(cmdlist))
+        mlog.debug('Sanity check compiler command line:', mesonlib.join_args(cmdlist))
         mlog.debug('Sanity check compile stdout:')
         mlog.debug(stdo)
         mlog.debug('-----\nSanity check compile stderr:')
@@ -330,12 +330,12 @@ class CLikeCompiler(Compiler):
             cmdlist = self.exe_wrapper.get_command() + [binary_name]
         else:
             cmdlist = [binary_name]
-        mlog.debug('Running test binary command: ' + ' '.join(cmdlist))
+        mlog.debug('Running test binary command: ', mesonlib.join_args(cmdlist))
         try:
-            pe = subprocess.Popen(cmdlist)
+            # fortran code writes to stdout
+            pe = subprocess.run(cmdlist, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             raise mesonlib.EnvironmentException(f'Could not invoke sanity test executable: {e!s}.')
-        pe.wait()
         if pe.returncode != 0:
             raise mesonlib.EnvironmentException(f'Executables created by {self.language} compiler {self.name_string()} are not runnable.')
 
@@ -517,9 +517,7 @@ class CLikeCompiler(Compiler):
                     low = cur + 1
                     if low > maxint:
                         raise mesonlib.EnvironmentException('Cross-compile check overflowed')
-                    cur = cur * 2 + 1
-                    if cur > maxint:
-                        cur = maxint
+                    cur = min(cur * 2 + 1, maxint)
                 high = cur
             else:
                 high = cur = -1
@@ -527,9 +525,7 @@ class CLikeCompiler(Compiler):
                     high = cur - 1
                     if high < minint:
                         raise mesonlib.EnvironmentException('Cross-compile check overflowed')
-                    cur = cur * 2
-                    if cur < minint:
-                        cur = minint
+                    cur = max(cur * 2, minint)
                 low = cur
         else:
             # Sanity check limits given by user
@@ -1158,6 +1154,8 @@ class CLikeCompiler(Compiler):
                 trial = self._get_file_from_list(env, trials)
                 if not trial:
                     continue
+                if libname.startswith('lib') and trial.name.startswith(libname):
+                    mlog.warning(f'find_library({libname!r}) starting in "lib" only works by accident and is not portable')
                 return [trial.as_posix()]
         return None
 
@@ -1193,7 +1191,7 @@ class CLikeCompiler(Compiler):
         if self.id != 'clang':
             raise mesonlib.MesonException('Cannot find framework path with non-clang compiler')
         # Construct the compiler command-line
-        commands = self.get_exelist() + ['-v', '-E', '-']
+        commands = self.get_exelist(ccache=False) + ['-v', '-E', '-']
         commands += self.get_always_args()
         # Add CFLAGS/CXXFLAGS/OBJCFLAGS/OBJCXXFLAGS from the env
         commands += env.coredata.get_external_args(self.for_machine, self.language)
@@ -1330,3 +1328,18 @@ class CLikeCompiler(Compiler):
 
     def get_disable_assert_args(self) -> T.List[str]:
         return ['-DNDEBUG']
+
+    @functools.lru_cache(maxsize=None)
+    def can_compile(self, src: 'mesonlib.FileOrString') -> bool:
+        # Files we preprocess can be anything, e.g. .in
+        if self.mode == 'PREPROCESSOR':
+            return True
+        return super().can_compile(src)
+
+    def get_preprocessor(self) -> Compiler:
+        if not self.preprocessor:
+            self.preprocessor = copy.copy(self)
+            self.preprocessor.exelist = self.exelist + self.get_preprocess_to_file_args()
+            self.preprocessor.mode = 'PREPROCESSOR'
+            self.modes.append(self.preprocessor)
+        return self.preprocessor

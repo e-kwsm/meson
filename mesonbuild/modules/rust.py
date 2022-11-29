@@ -1,4 +1,4 @@
-# Copyright © 2020 Intel Corporation
+# Copyright © 2020-2022 Intel Corporation
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,7 +50,7 @@ class RustModule(ExtensionModule):
 
     """A module that holds helper functions for rust."""
 
-    INFO = ModuleInfo('rust', '0.57.0', unstable=True)
+    INFO = ModuleInfo('rust', '0.57.0', stabilized='1.0.0')
 
     def __init__(self, interpreter: 'Interpreter') -> None:
         super().__init__(interpreter)
@@ -134,8 +134,6 @@ class RustModule(ExtensionModule):
                 del extra_args[i]
                 break
 
-        dependencies = [d for d in kwargs['dependencies']]
-
         # We need to cast here, as currently these don't have protocol in them, but test itself does.
         tkwargs = T.cast('_kwargs.FuncTest', kwargs.copy())
 
@@ -147,11 +145,14 @@ class RustModule(ExtensionModule):
         # one
         new_target_kwargs['rust_args'] = new_target_kwargs.get('rust_args', []) + ['--test']
         new_target_kwargs['install'] = False
-        new_target_kwargs['dependencies'] = new_target_kwargs.get('dependencies', []) + dependencies
+        new_target_kwargs['dependencies'] = new_target_kwargs.get('dependencies', []) + kwargs['dependencies']
+
+        sources = T.cast('T.List[SourceOutputs]', base_target.sources.copy())
+        sources.extend(base_target.generated)
 
         new_target = Executable(
             name, base_target.subdir, state.subproject, base_target.for_machine,
-            base_target.sources, base_target.structured_sources,
+            sources, base_target.structured_sources,
             base_target.objects, base_target.environment, base_target.compilers,
             new_target_kwargs
         )

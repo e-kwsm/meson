@@ -19,29 +19,44 @@ import tempfile
 import unittest
 import subprocess
 import zipapp
+import sysconfig
 from pathlib import Path
 
 from mesonbuild.mesonlib import windows_proof_rmtree, python_command, is_windows
 from mesonbuild.coredata import version as meson_version
 
-# Handle the scheme that Debian patches in the as default
-import sysconfig
-# This function was renamed and made public in Python 3.10
-if hasattr(sysconfig, 'get_default_scheme'):
-    scheme = sysconfig.get_default_scheme()
-else:
-    scheme = sysconfig._get_default_scheme()
-if scheme == 'posix_local':
-    scheme = 'posix_prefix'
+scheme = None
+
+def needs_debian_path_hack():
+    try:
+        import setuptools
+        return int(setuptools.__version__.split('.')[0]) < 65
+    except ModuleNotFoundError:
+        return False
+
+if needs_debian_path_hack():
+    # Handle the scheme that Debian patches in the as default
+    # This function was renamed and made public in Python 3.10
+    if hasattr(sysconfig, 'get_default_scheme'):
+        scheme = sysconfig.get_default_scheme()
+    else:
+        scheme = sysconfig._get_default_scheme()
+    if scheme == 'posix_local':
+        scheme = 'posix_prefix'
 
 def get_pypath():
-    pypath = sysconfig.get_path('purelib', scheme=scheme, vars={'base': ''})
+    if scheme:
+        pypath = sysconfig.get_path('purelib', scheme=scheme, vars={'base': ''})
+    else:
+        pypath = sysconfig.get_path('purelib', vars={'base': ''})
     # Ensure that / is the path separator and not \, then strip /
     return Path(pypath).as_posix().strip('/')
 
 def get_pybindir():
     # 'Scripts' on Windows and 'bin' on other platforms including MSYS
-    return sysconfig.get_path('scripts', scheme=scheme, vars={'base': ''}).strip('\\/')
+    if scheme:
+        return sysconfig.get_path('scripts', scheme=scheme, vars={'base': ''}).strip('\\/')
+    return sysconfig.get_path('scripts', vars={'base': ''}).strip('\\/')
 
 class CommandTests(unittest.TestCase):
     '''
@@ -117,13 +132,17 @@ class CommandTests(unittest.TestCase):
         bindir = (self.tmpdir / 'bin')
         bindir.mkdir()
         (bindir / 'meson').symlink_to(self.src_root / 'meson.py')
+        (bindir / 'python3').symlink_to(python_command[0])
         os.environ['PATH'] = str(bindir) + os.pathsep + os.environ['PATH']
+        # use our overridden PATH-compatible python
+        path_resolved_meson_command = resolved_meson_command.copy()
+        path_resolved_meson_command[0] = str(bindir / 'python3')
         # See if it works!
         meson_py = 'meson'
         meson_setup = [meson_py, 'setup']
         meson_command = meson_setup + self.meson_args
         stdo = self._run(meson_command + [self.testdir, builddir])
-        self.assertMesonCommandIs(stdo.split('\n')[0], resolved_meson_command)
+        self.assertMesonCommandIs(stdo.split('\n')[0], path_resolved_meson_command)
 
     def test_meson_installed(self):
         # Install meson

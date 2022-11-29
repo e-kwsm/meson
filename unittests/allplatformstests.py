@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from mesonbuild.mesonlib.universal import windows_proof_rm
 import subprocess
 import re
 import json
@@ -42,12 +41,16 @@ from mesonbuild.mesonlib import (
     BuildDirLock, MachineChoice, is_windows, is_osx, is_cygwin, is_dragonflybsd,
     is_sunos, windows_proof_rmtree, python_command, version_compare, split_args, quote_arg,
     relpath, is_linux, git, search_version, do_conf_file, do_conf_str, default_prefix,
-    MesonException, EnvironmentException, OptionKey
+    MesonException, EnvironmentException, OptionKey, ExecutableSerialisation, EnvironmentVariables,
+    windows_proof_rm
 )
 
+from mesonbuild.compilers.mixins.clang import ClangCompiler
+from mesonbuild.compilers.mixins.gnu import GnuCompiler
+from mesonbuild.compilers.mixins.intel import IntelGnuLikeCompiler
+from mesonbuild.compilers.c import VisualStudioCCompiler, ClangClCCompiler
+from mesonbuild.compilers.cpp import VisualStudioCPPCompiler, ClangClCPPCompiler
 from mesonbuild.compilers import (
-    GnuCompiler, ClangCompiler, IntelGnuLikeCompiler, VisualStudioCCompiler,
-    VisualStudioCPPCompiler, ClangClCCompiler, ClangClCPPCompiler,
     detect_static_linker, detect_c_compiler, compiler_from_language,
     detect_compiler_for
 )
@@ -539,7 +542,7 @@ class AllPlatformTests(BasePlatformTests):
         self.run_tests()
 
     def test_implicit_forcefallback(self):
-        testdir = os.path.join(self.unit_test_dir, '96 implicit force fallback')
+        testdir = os.path.join(self.unit_test_dir, '95 implicit force fallback')
         with self.assertRaises(subprocess.CalledProcessError):
             self.init(testdir)
         self.init(testdir, extra_args=['--wrap-mode=forcefallback'])
@@ -578,7 +581,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertIn('1/1 subtest 1', out)
 
     def test_long_output(self):
-        testdir = os.path.join(self.common_test_dir, '253 long output')
+        testdir = os.path.join(self.common_test_dir, '254 long output')
         self.init(testdir)
         self.build()
         self.run_tests()
@@ -1746,7 +1749,7 @@ class AllPlatformTests(BasePlatformTests):
         check_pcfile('libvartest2.pc', relocatable=False)
 
         self.wipe()
-        testdir_abs = os.path.join(self.unit_test_dir, '106 pkgconfig relocatable with absolute path')
+        testdir_abs = os.path.join(self.unit_test_dir, '105 pkgconfig relocatable with absolute path')
         self.init(testdir_abs)
 
         check_pcfile('libsimple.pc', relocatable=True, levels=3)
@@ -2109,7 +2112,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertIn(msg, out)
 
     def test_mixed_language_linker_check(self):
-        testdir = os.path.join(self.unit_test_dir, '97 compiler.links file arg')
+        testdir = os.path.join(self.unit_test_dir, '96 compiler.links file arg')
         self.init(testdir)
         cmds = self.get_meson_log_compiler_checks()
         self.assertEqual(len(cmds), 5)
@@ -2276,6 +2279,9 @@ class AllPlatformTests(BasePlatformTests):
         self.setconf('--warnlevel=3')
         obj = mesonbuild.coredata.load(self.builddir)
         self.assertEqual(obj.options[OptionKey('warning_level')].value, '3')
+        self.setconf('--warnlevel=everything')
+        obj = mesonbuild.coredata.load(self.builddir)
+        self.assertEqual(obj.options[OptionKey('warning_level')].value, 'everything')
         self.wipe()
 
         # But when using -D syntax, it should be 'warning_level'
@@ -2285,6 +2291,9 @@ class AllPlatformTests(BasePlatformTests):
         self.setconf('-Dwarning_level=3')
         obj = mesonbuild.coredata.load(self.builddir)
         self.assertEqual(obj.options[OptionKey('warning_level')].value, '3')
+        self.setconf('-Dwarning_level=everything')
+        obj = mesonbuild.coredata.load(self.builddir)
+        self.assertEqual(obj.options[OptionKey('warning_level')].value, 'everything')
         self.wipe()
 
         # Mixing --option and -Doption is forbidden
@@ -3314,7 +3323,7 @@ class AllPlatformTests(BasePlatformTests):
                 A number       : 1
                 yes            : YES
                 no             : NO
-                coma list      : a, b, c
+                comma list     : a, b, c
 
               Stuff
                 missing prog   : NO
@@ -3322,9 +3331,10 @@ class AllPlatformTests(BasePlatformTests):
                 missing dep    : NO
                 external dep   : YES 1.2.3
                 internal dep   : YES
+                disabler       : NO
 
               Plugins
-                long coma list : alpha, alphacolor, apetag, audiofx, audioparsers, auparse,
+                long comma list: alpha, alphacolor, apetag, audiofx, audioparsers, auparse,
                                  autodetect, avi
 
               Subprojects
@@ -3733,9 +3743,25 @@ class AllPlatformTests(BasePlatformTests):
                   patch_directory = wrap_git_builddef
                   revision = master
                 '''.format(upstream_uri)))
-            self.init(srcdir)
+            out = self.init(srcdir)
             self.build()
             self.run_tests()
+
+            # Make sure the warning does not occur on the first init.
+            out_of_date_warning = 'revision may be out of date'
+            self.assertNotIn(out_of_date_warning, out)
+
+            # Change the wrap's revisions, reconfigure, and make sure it does
+            # warn on the reconfigure.
+            with open(os.path.join(srcdir, 'subprojects', 'wrap_git.wrap'), 'w', encoding='utf-8') as f:
+                f.write(textwrap.dedent('''
+                  [wrap-git]
+                  url = {}
+                  patch_directory = wrap_git_builddef
+                  revision = not-master
+                '''.format(upstream_uri)))
+            out = self.init(srcdir, extra_args='--reconfigure')
+            self.assertIn(out_of_date_warning, out)
 
     def test_extract_objects_custom_target_no_warning(self):
         testdir = os.path.join(self.common_test_dir, '22 object extraction')
@@ -3858,7 +3884,7 @@ class AllPlatformTests(BasePlatformTests):
         self.init(srcdir, extra_args=['-Dbuild.b_lto=true'])
 
     def test_install_skip_subprojects(self):
-        testdir = os.path.join(self.unit_test_dir, '92 install skip subprojects')
+        testdir = os.path.join(self.unit_test_dir, '91 install skip subprojects')
         self.init(testdir)
         self.build()
 
@@ -3904,7 +3930,7 @@ class AllPlatformTests(BasePlatformTests):
         check_installed_files(['--skip-subprojects', 'another'], all_expected)
 
     def test_adding_subproject_to_configure_project(self) -> None:
-        srcdir = os.path.join(self.unit_test_dir, '93 new subproject in configured project')
+        srcdir = os.path.join(self.unit_test_dir, '92 new subproject in configured project')
         self.init(srcdir)
         self.build()
         self.setconf('-Duse-sub=true')
@@ -3927,7 +3953,7 @@ class AllPlatformTests(BasePlatformTests):
         if not shutil.which('clang-format'):
             raise SkipTest('clang-format not found')
 
-        testdir = os.path.join(self.unit_test_dir, '94 clangformat')
+        testdir = os.path.join(self.unit_test_dir, '93 clangformat')
         newdir = os.path.join(self.builddir, 'testdir')
         shutil.copytree(testdir, newdir)
         self.new_builddir()
@@ -3952,7 +3978,7 @@ class AllPlatformTests(BasePlatformTests):
         self.build('clang-format-check')
 
     def test_custom_target_implicit_include(self):
-        testdir = os.path.join(self.unit_test_dir, '95 custominc')
+        testdir = os.path.join(self.unit_test_dir, '94 custominc')
         self.init(testdir)
         self.build()
         compdb = self.get_compdb()
@@ -3992,7 +4018,7 @@ class AllPlatformTests(BasePlatformTests):
                 self.assertEqual(sorted(link_args), sorted(['-flto']))
 
     def test_install_tag(self) -> None:
-        testdir = os.path.join(self.unit_test_dir, '99 install all targets')
+        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
         self.init(testdir)
         self.build()
 
@@ -4034,6 +4060,11 @@ class AllPlatformTests(BasePlatformTests):
             Path(installpath, 'usr/lib/libstatic.a'),
             Path(installpath, 'usr/lib/libboth.a'),
             Path(installpath, 'usr/lib/libboth2.a'),
+            Path(installpath, 'usr/include/ct-header1.h'),
+            Path(installpath, 'usr/include/ct-header3.h'),
+            Path(installpath, 'usr/include/subdir-devel'),
+            Path(installpath, 'usr/include/custom_files'),
+            Path(installpath, 'usr/include/custom_files/data.txt'),
         }
 
         if cc.get_id() in {'msvc', 'clang-cl'}:
@@ -4139,7 +4170,7 @@ class AllPlatformTests(BasePlatformTests):
         do_install(None, expected_all, 2)
 
     def test_introspect_install_plan(self):
-        testdir = os.path.join(self.unit_test_dir, '99 install all targets')
+        testdir = os.path.join(self.unit_test_dir, '98 install all targets')
         introfile = os.path.join(self.builddir, 'meson-info', 'intro-install_plan.json')
         self.init(testdir)
         self.assertPathExists(introfile)
@@ -4327,7 +4358,8 @@ class AllPlatformTests(BasePlatformTests):
         self.init(testdir, extra_args=['--werror'], override_envvars={'RUSTC': 'clippy-driver'})
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             self.build()
-        self.assertIn('error: use of a blacklisted/placeholder name `foo`', cm.exception.stdout)
+        self.assertTrue('error: use of a blacklisted/placeholder name `foo`' in cm.exception.stdout or
+                        'error: use of a disallowed/placeholder name `foo`' in cm.exception.stdout)
 
     @skip_if_not_language('rust')
     def test_rust_rlib_linkage(self) -> None:
@@ -4341,7 +4373,7 @@ class AllPlatformTests(BasePlatformTests):
                 }}
             ''')
 
-        testdir = os.path.join(self.unit_test_dir, '102 rlib linkage')
+        testdir = os.path.join(self.unit_test_dir, '101 rlib linkage')
         gen_file = os.path.join(testdir, 'lib.rs')
         with open(gen_file, 'w') as f:
             f.write(template.format(0))
@@ -4361,7 +4393,7 @@ class AllPlatformTests(BasePlatformTests):
         self.assertIn('exit status 39', cm.exception.stdout)
 
     def test_custom_target_name(self):
-        testdir = os.path.join(self.unit_test_dir, '100 custom target name')
+        testdir = os.path.join(self.unit_test_dir, '99 custom target name')
         self.init(testdir)
         out = self.build()
         if self.backend is Backend.ninja:
@@ -4369,7 +4401,7 @@ class AllPlatformTests(BasePlatformTests):
             self.assertIn('Generating subdir/file.txt with a custom command', out)
 
     def test_symlinked_subproject(self):
-        testdir = os.path.join(self.unit_test_dir, '107 subproject symlink')
+        testdir = os.path.join(self.unit_test_dir, '106 subproject symlink')
         subproject_dir = os.path.join(testdir, 'subprojects')
         subproject = os.path.join(testdir, 'symlinked_subproject')
         symlinked_subproject = os.path.join(testdir, 'subprojects', 'symlinked_subproject')
@@ -4382,7 +4414,7 @@ class AllPlatformTests(BasePlatformTests):
         self.build()
 
     def test_configure_same_noop(self):
-        testdir = os.path.join(self.unit_test_dir, '109 configure same noop')
+        testdir = os.path.join(self.unit_test_dir, '108 configure same noop')
         self.init(testdir, extra_args=['-Dopt=val'])
 
         filename = os.path.join(self.privatedir, 'coredata.dat')
@@ -4390,3 +4422,31 @@ class AllPlatformTests(BasePlatformTests):
         self.setconf(["-Dopt=val"])
         newmtime = os.path.getmtime(filename)
         self.assertEqual(oldmtime, newmtime)
+
+    def test_scripts_loaded_modules(self):
+        '''
+        Simulate a wrapped command, as done for custom_target() that capture
+        output. The script will print all python modules loaded and we verify
+        that it contains only an acceptable subset. Loading too many modules
+        slows down the build when many custom targets get wrapped.
+        '''
+        es = ExecutableSerialisation(python_command + ['-c', 'exit(0)'], env=EnvironmentVariables())
+        p = Path(self.builddir, 'exe.dat')
+        with p.open('wb') as f:
+            pickle.dump(es, f)
+        cmd = self.meson_command + ['--internal', 'test_loaded_modules', '--unpickle', str(p)]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE)
+        all_modules = json.loads(p.stdout.splitlines()[0])
+        meson_modules = [m for m in all_modules if 'meson' in m]
+        expected_meson_modules = [
+            'mesonbuild',
+            'mesonbuild._pathlib',
+            'mesonbuild.utils',
+            'mesonbuild.utils.core',
+            'mesonbuild.mesonmain',
+            'mesonbuild.mlog',
+            'mesonbuild.scripts',
+            'mesonbuild.scripts.meson_exe',
+            'mesonbuild.scripts.test_loaded_modules'
+        ]
+        self.assertEqual(sorted(expected_meson_modules), sorted(meson_modules))

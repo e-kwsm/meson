@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import typing as T
 
-from ..mesonlib import OrderedSet, generate_list
+from ..mesonlib import OrderedSet, generate_list, Popen_safe
 
 SHT_STRTAB = 3
 DT_NEEDED = 1
@@ -306,7 +306,7 @@ class Elf(DataSizes):
             self.bf.seek(offset)
             name = self.read_str()
             if name.startswith(prefix):
-                basename = name.split(b'/')[-1]
+                basename = name.rsplit(b'/', maxsplit=1)[-1]
                 padding = b'\0' * (len(name) - len(basename))
                 newname = basename + padding
                 assert len(newname) == len(name)
@@ -391,9 +391,9 @@ def fix_elf(fname: str, rpath_dirs_to_remove: T.Set[bytes], new_rpath: T.Optiona
             e.fix_rpath(fname, rpath_dirs_to_remove, new_rpath)
 
 def get_darwin_rpaths_to_remove(fname: str) -> T.List[str]:
-    out = subprocess.check_output(['otool', '-l', fname],
-                                  universal_newlines=True,
-                                  stderr=subprocess.DEVNULL)
+    p, out, _ = Popen_safe(['otool', '-l', fname], stderr=subprocess.DEVNULL)
+    if p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, p.args, out)
     result = []
     current_cmd = 'FOOBAR'
     for line in out.split('\n'):
@@ -470,7 +470,7 @@ def fix_jar(fname: str) -> None:
     subprocess.check_call(['jar', 'ufm', fname, 'META-INF/MANIFEST.MF'])
 
 def fix_rpath(fname: str, rpath_dirs_to_remove: T.Set[bytes], new_rpath: T.Union[str, bytes], final_path: str, install_name_mappings: T.Dict[str, str], verbose: bool = True) -> None:
-    global INSTALL_NAME_TOOL
+    global INSTALL_NAME_TOOL  # pylint: disable=global-statement
     # Static libraries, import libraries, debug information, headers, etc
     # never have rpaths
     # DLLs and EXE currently do not need runtime path fixing

@@ -83,7 +83,7 @@ class CMakeTarget:
             return
         for key, val in self.properties.items():
             self.properties[key] = [x.strip() for x in val]
-            assert all([';' not in x for x in self.properties[key]])
+            assert all(';' not in x for x in self.properties[key])
 
 class CMakeGeneratorTarget(CMakeTarget):
     def __init__(self, name: str) -> None:
@@ -498,7 +498,7 @@ class CMakeTraceParser:
             curr = args.pop(0)
             # XXX: APPEND_STRING is specifically *not* supposed to create a
             # list, is treating them as aliases really okay?
-            if curr == 'APPEND' or curr == 'APPEND_STRING':
+            if curr in {'APPEND', 'APPEND_STRING'}:
                 append = True
                 continue
 
