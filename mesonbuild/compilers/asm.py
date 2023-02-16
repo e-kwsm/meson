@@ -47,6 +47,14 @@ class NasmCompiler(Compiler):
     def get_output_args(self, outputname: str) -> T.List[str]:
         return ['-o', outputname]
 
+    def unix_args_to_native(self, args: T.List[str]) -> T.List[str]:
+        outargs = []
+        for arg in args:
+            if arg == '-pthread':
+                continue
+            outargs.append(arg)
+        return outargs
+
     def get_optimization_args(self, optimization_level: str) -> T.List[str]:
         return nasm_optimization_args[optimization_level]
 
@@ -61,7 +69,7 @@ class NasmCompiler(Compiler):
         return 'd'
 
     def get_dependency_gen_args(self, outtarget: str, outfile: str) -> T.List[str]:
-        return ['-MD', '-MQ', outtarget, '-MF', outfile]
+        return ['-MD', outfile, '-MQ', outtarget]
 
     def sanity_check(self, work_dir: str, environment: 'Environment') -> None:
         if self.info.cpu_family not in {'x86', 'x86_64'}:

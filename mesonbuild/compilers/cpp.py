@@ -58,8 +58,8 @@ def non_msvc_eh_options(eh: str, args: T.List[str]) -> None:
     if eh == 'none':
         args.append('-fno-exceptions')
     elif eh in {'s', 'c'}:
-        mlog.warning('non-MSVC compilers do not support ' + eh + ' exception handling.' +
-                     'You may want to set eh to \'default\'.')
+        mlog.warning(f'non-MSVC compilers do not support {eh} exception handling. '
+                     'You may want to set eh to \'default\'.', fatal=False)
 
 class CPPCompiler(CLikeCompiler, Compiler):
     def attribute_check_func(self, name: str) -> str:
@@ -286,6 +286,8 @@ class EmscriptenCPPCompiler(EmscriptenMixin, ClangCPPCompiler):
                  full_version: T.Optional[str] = None):
         if not is_cross:
             raise MesonException('Emscripten compiler can only be used for cross compilation.')
+        if not version_compare(version, '>=1.39.19'):
+            raise MesonException('Meson requires Emscripten >= 1.39.19')
         ClangCPPCompiler.__init__(self, ccache, exelist, version, for_machine, is_cross,
                                   info, exe_wrapper=exe_wrapper, linker=linker,
                                   defines=defines, full_version=full_version)
@@ -690,7 +692,8 @@ class CPP11AsCPP14Mixin(CompilerMixinBase):
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         if options[key].value in {'vc++11', 'c++11'}:
             mlog.warning(self.id, 'does not support C++11;',
-                         'attempting best effort; setting the standard to C++14', once=True)
+                         'attempting best effort; setting the standard to C++14',
+                         once=True, fatal=False)
             # Don't mutate anything we're going to change, we need to use
             # deepcopy since we're messing with members, and we can't simply
             # copy the members because the option proxy doesn't support it.
@@ -715,6 +718,12 @@ class VisualStudioCPPCompiler(CPP11AsCPP14Mixin, VisualStudioLikeCPPCompilerMixi
                              info, exe_wrapper, linker=linker, full_version=full_version)
         MSVCCompiler.__init__(self, target)
 
+        # By default, MSVC has a broken __cplusplus define that pretends to be c++98:
+        # https://docs.microsoft.com/en-us/cpp/build/reference/zc-cplusplus?view=msvc-160
+        # Pass the flag to enable a truthful define, if possible.
+        if version_compare(self.version, '>= 19.14.26428'):
+            self.always_args = self.always_args + ['/Zc:__cplusplus']
+
     def get_options(self) -> 'MutableKeyedOptionDictType':
         cpp_stds = ['none', 'c++11', 'vc++11']
         # Visual Studio 2015 and later
@@ -730,7 +739,7 @@ class VisualStudioCPPCompiler(CPP11AsCPP14Mixin, VisualStudioLikeCPPCompilerMixi
     def get_option_compile_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
         key = OptionKey('std', machine=self.for_machine, lang=self.language)
         if options[key].value != 'none' and version_compare(self.version, '<19.00.24210'):
-            mlog.warning('This version of MSVC does not support cpp_std arguments')
+            mlog.warning('This version of MSVC does not support cpp_std arguments', fatal=False)
             options = copy.copy(options)
             options[key].value = 'none'
 
@@ -742,16 +751,6 @@ class VisualStudioCPPCompiler(CPP11AsCPP14Mixin, VisualStudioLikeCPPCompilerMixi
             except ValueError:
                 return args
             del args[i]
-        return args
-
-    def get_always_args(self) -> T.List[str]:
-        args = super().get_always_args()
-
-        # By default, MSVC has a broken __cplusplus define that pretends to be c++98:
-        # https://docs.microsoft.com/en-us/cpp/build/reference/zc-cplusplus?view=msvc-160
-        # Pass the flag to enable a truthful define, if possible.
-        if version_compare(self.version, '>= 19.14.26428') and '/Zc:__cplusplus' not in args:
-            return args + ['/Zc:__cplusplus']
         return args
 
 class ClangClCPPCompiler(CPP11AsCPP14Mixin, VisualStudioLikeCPPCompilerMixin, ClangClCompiler, CPPCompiler):
@@ -768,7 +767,7 @@ class ClangClCPPCompiler(CPP11AsCPP14Mixin, VisualStudioLikeCPPCompilerMixin, Cl
         ClangClCompiler.__init__(self, target)
 
     def get_options(self) -> 'MutableKeyedOptionDictType':
-        cpp_stds = ['none', 'c++11', 'vc++11', 'c++14', 'vc++14', 'c++17', 'vc++17', 'c++latest']
+        cpp_stds = ['none', 'c++11', 'vc++11', 'c++14', 'vc++14', 'c++17', 'vc++17', 'c++20', 'vc++20', 'c++latest']
         return self._get_options_impl(super().get_options(), cpp_stds)
 
 

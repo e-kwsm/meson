@@ -14,6 +14,7 @@
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
+from __future__ import annotations
 
 from ..mesonlib import MesonException, OptionKey
 from .. import mlog
@@ -100,9 +101,9 @@ def _flags_to_list(raw: str) -> T.List[str]:
             escape = False
         elif i == '\\':
             escape = True
-        elif i in ['"', "'"]:
+        elif i in {'"', "'"}:
             in_string = not in_string
-        elif i in [' ', '\n']:
+        elif i in {' ', '\n'}:
             if in_string:
                 curr += i
             else:
@@ -111,7 +112,7 @@ def _flags_to_list(raw: str) -> T.List[str]:
         else:
             curr += i
     res += [curr]
-    res = list(filter(lambda x: len(x) > 0, res))
+    res = [r for r in res if len(r) > 0]
     return res
 
 def cmake_get_generator_args(env: 'Environment') -> T.List[str]:

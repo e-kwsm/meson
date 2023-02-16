@@ -17,7 +17,6 @@
 from __future__ import annotations
 from pathlib import Path
 import argparse
-import ctypes
 import enum
 import sys
 import stat
@@ -26,7 +25,7 @@ import abc
 import platform, subprocess, operator, os, shlex, shutil, re
 import collections
 from functools import lru_cache, wraps, total_ordering
-from itertools import tee, filterfalse
+from itertools import tee
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 import typing as T
 import textwrap
@@ -83,6 +82,13 @@ __all__ = [
     'default_libdir',
     'default_libexecdir',
     'default_prefix',
+    'default_datadir',
+    'default_includedir',
+    'default_infodir',
+    'default_localedir',
+    'default_mandir',
+    'default_sbindir',
+    'default_sysconfdir',
     'detect_subprojects',
     'detect_vcs',
     'do_conf_file',
@@ -95,7 +101,6 @@ __all__ = [
     'generate_list',
     'get_compiler_for_source',
     'get_filenames_templates_dict',
-    'get_library_dirs',
     'get_variable_regex',
     'get_wine_shortpath',
     'git',
@@ -250,7 +255,7 @@ def check_direntry_issues(direntry_array: T.Union[T.Iterable[T.Union[str, bytes]
                 You are using {e!r} which is not a Unicode-compatible
                 locale but you are trying to access a file system entry called {de!r} which is
                 not pure ASCII. This may cause problems.
-                '''), file=sys.stderr)
+                '''))
 
 class SecondLevelHolder(HoldableObject, metaclass=abc.ABCMeta):
     ''' A second level object holder. The primary purpose
@@ -699,6 +704,7 @@ def windows_detect_native_arch() -> str:
     if sys.platform != 'win32':
         return ''
     try:
+        import ctypes
         process_arch = ctypes.c_ushort()
         native_arch = ctypes.c_ushort()
         kernel32 = ctypes.windll.kernel32
@@ -730,10 +736,38 @@ def windows_detect_native_arch() -> str:
 
 def detect_vcs(source_dir: T.Union[str, Path]) -> T.Optional[T.Dict[str, str]]:
     vcs_systems = [
-        dict(name = 'git',        cmd = 'git', repo_dir = '.git', get_rev = 'git describe --dirty=+', rev_regex = '(.*)', dep = '.git/logs/HEAD'),
-        dict(name = 'mercurial',  cmd = 'hg',  repo_dir = '.hg',  get_rev = 'hg id -i',               rev_regex = '(.*)', dep = '.hg/dirstate'),
-        dict(name = 'subversion', cmd = 'svn', repo_dir = '.svn', get_rev = 'svn info',               rev_regex = 'Revision: (.*)', dep = '.svn/wc.db'),
-        dict(name = 'bazaar',     cmd = 'bzr', repo_dir = '.bzr', get_rev = 'bzr revno',              rev_regex = '(.*)', dep = '.bzr'),
+        {
+            'name': 'git',
+            'cmd': 'git',
+            'repo_dir': '.git',
+            'get_rev': 'git describe --dirty=+',
+            'rev_regex': '(.*)',
+            'dep': '.git/logs/HEAD'
+        },
+        {
+            'name': 'mercurial',
+            'cmd': 'hg',
+            'repo_dir': '.hg',
+            'get_rev': 'hg id -i',
+            'rev_regex': '(.*)',
+            'dep': '.hg/dirstate'
+        },
+        {
+            'name': 'subversion',
+            'cmd': 'svn',
+            'repo_dir': '.svn',
+            'get_rev': 'svn info',
+            'rev_regex': 'Revision: (.*)',
+            'dep': '.svn/wc.db'
+        },
+        {
+            'name': 'bazaar',
+            'cmd': 'bzr',
+            'repo_dir': '.bzr',
+            'get_rev': 'bzr revno',
+            'rev_regex': '(.*)',
+            'dep': '.bzr'
+        },
     ]
     if isinstance(source_dir, str):
         source_dir = Path(source_dir)
@@ -871,7 +905,7 @@ def version_compare_many(vstr1: str, conditions: T.Union[str, T.Iterable[str]]) 
             not_found.append(req)
         else:
             found.append(req)
-    return not_found == [], not_found, found
+    return not not_found, not_found, found
 
 
 # determine if the minimum version satisfying the condition |condition| exceeds
@@ -978,58 +1012,60 @@ def default_libdir() -> str:
 
 
 def default_libexecdir() -> str:
+    if is_haiku():
+        return 'lib'
     # There is no way to auto-detect this, so it must be set at build time
     return 'libexec'
 
 
 def default_prefix() -> str:
-    return 'c:/' if is_windows() else '/usr/local'
-
-
-def get_library_dirs() -> T.List[str]:
     if is_windows():
-        return ['C:/mingw/lib'] # TODO: get programmatically
-    if is_osx():
-        return ['/usr/lib'] # TODO: get programmatically
-    # The following is probably Debian/Ubuntu specific.
-    # /usr/local/lib is first because it contains stuff
-    # installed by the sysadmin and is probably more up-to-date
-    # than /usr/lib. If you feel that this search order is
-    # problematic, please raise the issue on the mailing list.
-    unixdirs = ['/usr/local/lib', '/usr/lib', '/lib']
+        return 'c:/'
+    if is_haiku():
+        return '/boot/system/non-packaged'
+    return '/usr/local'
 
-    if is_freebsd():
-        return unixdirs
-    # FIXME: this needs to be further genericized for aarch64 etc.
-    machine = platform.machine()
-    if machine in ('i386', 'i486', 'i586', 'i686'):
-        plat = 'i386'
-    elif machine.startswith('arm'):
-        plat = 'arm'
-    else:
-        plat = ''
 
-    # Solaris puts 32-bit libraries in the main /lib & /usr/lib directories
-    # and 64-bit libraries in platform specific subdirectories.
-    if is_sunos():
-        if machine == 'i86pc':
-            plat = 'amd64'
-        elif machine.startswith('sun4'):
-            plat = 'sparcv9'
+def default_datadir() -> str:
+    if is_haiku():
+        return 'data'
+    return 'share'
 
-    usr_platdir = Path('/usr/lib/') / plat
-    if usr_platdir.is_dir():
-        unixdirs += [str(x) for x in (usr_platdir).iterdir() if x.is_dir()]
-    if os.path.exists('/usr/lib64'):
-        unixdirs.append('/usr/lib64')
 
-    lib_platdir = Path('/lib/') / plat
-    if lib_platdir.is_dir():
-        unixdirs += [str(x) for x in (lib_platdir).iterdir() if x.is_dir()]
-    if os.path.exists('/lib64'):
-        unixdirs.append('/lib64')
+def default_includedir() -> str:
+    if is_haiku():
+        return 'develop/headers'
+    return 'include'
 
-    return unixdirs
+
+def default_infodir() -> str:
+    if is_haiku():
+        return 'documentation/info'
+    return 'share/info'
+
+
+def default_localedir() -> str:
+    if is_haiku():
+        return 'data/locale'
+    return 'share/locale'
+
+
+def default_mandir() -> str:
+    if is_haiku():
+        return 'documentation/man'
+    return 'share/man'
+
+
+def default_sbindir() -> str:
+    if is_haiku():
+        return 'bin'
+    return 'sbin'
+
+
+def default_sysconfdir() -> str:
+    if is_haiku():
+        return 'settings'
+    return 'etc'
 
 
 def has_path_sep(name: str, sep: str = '/\\') -> bool:
@@ -1399,7 +1435,7 @@ def partition(pred: T.Callable[[_T], object], iterable: T.Iterable[_T]) -> T.Tup
     ([0, 2, 4, 6, 8], [1, 3, 5, 7, 9])
     """
     t1, t2 = tee(iterable)
-    return filterfalse(pred, t1), filter(pred, t2)
+    return (t for t in t1 if not pred(t)), (t for t in t2 if pred(t))
 
 
 def Popen_safe(args: T.List[str], write: T.Optional[str] = None,
@@ -1446,7 +1482,7 @@ def Popen_safe_legacy(args: T.List[str], write: T.Optional[str] = None,
         input_ = write.encode('utf-8')
     o, e = p.communicate(input_)
     if o is not None:
-        if sys.stdout.encoding:
+        if sys.stdout.encoding is not None:
             o = o.decode(encoding=sys.stdout.encoding, errors='replace').replace('\r\n', '\n')
         else:
             o = o.decode(errors='replace').replace('\r\n', '\n')
@@ -1906,7 +1942,7 @@ class RealPathAction(argparse.Action):
         setattr(namespace, self.dest, os.path.abspath(os.path.realpath(values)))
 
 
-def get_wine_shortpath(winecmd: T.List[str], wine_paths: T.Sequence[str],
+def get_wine_shortpath(winecmd: T.List[str], wine_paths: T.List[str],
                        workdir: T.Optional[str] = None) -> str:
     '''
     WINEPATH size is limited to 1024 bytes which can easily be exceeded when
@@ -2062,6 +2098,7 @@ _BUILTIN_NAMES = {
     'includedir',
     'infodir',
     'libdir',
+    'licensedir',
     'libexecdir',
     'localedir',
     'localstatedir',

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import itertools
 import os, platform, re, sys, shutil
@@ -25,9 +26,7 @@ from .mesonlib import (
     search_version, MesonBugException
 )
 from . import mlog
-from .programs import (
-    ExternalProgram, EmptyExternalProgram
-)
+from .programs import ExternalProgram
 
 from .envconfig import (
     BinaryTable, MachineInfo, Properties, known_cpu_families, CMakeVariables,
@@ -52,9 +51,10 @@ if T.TYPE_CHECKING:
 
     from .wrap.wrap import Resolver
 
-build_filename = 'meson.build'
+    CompilersDict = T.Dict[str, Compiler]
 
-CompilersDict = T.Dict[str, Compiler]
+
+build_filename = 'meson.build'
 
 
 def _get_env_var(for_machine: MachineChoice, is_cross: bool, var_name: str) -> T.Optional[str]:
@@ -306,7 +306,7 @@ def detect_cpu_family(compilers: CompilersDict) -> str:
         trial = 'ppc64'
     elif trial.startswith(('powerpc', 'ppc')) or trial in {'macppc', 'power macintosh'}:
         trial = 'ppc'
-    elif trial in ('amd64', 'x64', 'i86pc'):
+    elif trial in {'amd64', 'x64', 'i86pc'}:
         trial = 'x86_64'
     elif trial in {'sun4u', 'sun4v'}:
         trial = 'sparc64'
@@ -353,7 +353,7 @@ def detect_cpu(compilers: CompilersDict) -> str:
     else:
         trial = platform.machine().lower()
 
-    if trial in ('amd64', 'x64', 'i86pc'):
+    if trial in {'amd64', 'x64', 'i86pc'}:
         trial = 'x86_64'
     if trial == 'x86_64':
         # Same check as above for cpu_family
@@ -456,7 +456,7 @@ class Environment:
                 # If we stored previous command line options, we can recover from
                 # a broken/outdated coredata.
                 if os.path.isfile(coredata.get_cmd_line_file(self.build_dir)):
-                    mlog.warning('Regenerating configuration from scratch.')
+                    mlog.warning('Regenerating configuration from scratch.', fatal=False)
                     mlog.log('Reason:', mlog.red(str(e)))
                     coredata.read_cmd_line_file(self.build_dir, options)
                     self.create_new_coredata(options)
@@ -552,7 +552,8 @@ class Environment:
         if bt in self.options and (db in self.options or op in self.options):
             mlog.warning('Recommend using either -Dbuildtype or -Doptimization + -Ddebug. '
                          'Using both is redundant since they override each other. '
-                         'See: https://mesonbuild.com/Builtin-options.html#build-type-options')
+                         'See: https://mesonbuild.com/Builtin-options.html#build-type-options',
+                         fatal=False)
 
         exe_wrapper = self.lookup_binary_entry(MachineChoice.HOST, 'exe_wrapper')
         if exe_wrapper is not None:
@@ -852,7 +853,7 @@ class Environment:
             return value
         return not machine_info_can_run(self.machines[for_machine])
 
-    def get_exe_wrapper(self) -> ExternalProgram:
+    def get_exe_wrapper(self) -> T.Optional[ExternalProgram]:
         if not self.need_exe_wrapper():
-            return EmptyExternalProgram()
+            return None
         return self.exe_wrapper

@@ -13,6 +13,7 @@ here. Some additional projects are listed in the [`meson` GitHub
 topic](https://github.com/topics/meson).
 
  - [2048.cpp](https://github.com/plibither8/2048.cpp), a fully featured terminal version of the game "2048" written in C++
+ - [aawordsearch](https://github.com/theimpossibleastronaut/aawordsearch), generate wordsearch puzzles using random words in different languages
  - [Adwaita Manager](https://github.com/AdwCustomizerTeam/AdwCustomizer), change the look of Adwaita, with ease
  - [Aravis](https://github.com/AravisProject/aravis), a glib/gobject based library for video acquisition using Genicam cameras
  - [Akira](https://github.com/akiraux/Akira), a native Linux app for UI and UX design built in Vala and Gtk
@@ -20,6 +21,7 @@ topic](https://github.com/topics/meson).
  - [Arduino sample project](https://github.com/jpakkane/mesonarduino)
  - [Audacious](https://github.com/audacious-media-player), a lightweight and versatile audio player
  - [bolt](https://gitlab.freedesktop.org/bolt/bolt), userspace daemon to enable security levels for Thunderbolt™ 3 on Linux
+ - [bsdutils](https://github.com/dcantrell/bsdutils), alternative to GNU coreutils using software from FreeBSD
  - [Bubblewrap](https://github.com/containers/bubblewrap), unprivileged sandboxing tool
  - [Budgie Desktop](https://github.com/budgie-desktop/budgie-desktop), a desktop environment built on GNOME technologies
  - [Bzip2](https://gitlab.com/federicomenaquintero/bzip2), the bzip2 compressor/decompressor
@@ -67,6 +69,7 @@ topic](https://github.com/topics/meson).
  - [HelenOS](http://helenos.org), a portable microkernel-based multiserver operating system
  - [HexChat](https://github.com/hexchat/hexchat), a cross-platform IRC client in C
  - [IGT](https://gitlab.freedesktop.org/drm/igt-gpu-tools), Linux kernel graphics driver test suite
+ - [i3](https://i3wm.org), improved tiling window manager
  - [inih](https://github.com/benhoyt/inih) (INI Not Invented Here), a small and simple .INI file parser written in C
  - [Irssi](https://github.com/irssi/irssi), a terminal chat client in C
  - [iSH](https://github.com/tbodt/ish), Linux shell for iOS
@@ -132,6 +135,7 @@ format files
  - [Planner](https://github.com/alainm23/planner), task manager with Todoist support designed for GNU/Linux
  - [Playerctl](https://github.com/acrisci/playerctl), mpris command-line controller and library for spotify, vlc, audacious, bmp, cmus, and others
  - [Polari](https://gitlab.gnome.org/GNOME/polari), an IRC client
+ - [PostgreSQL](https://www.postgresql.org/), an advanced open source relational database
  - [qboot](https://github.com/bonzini/qboot), a minimal x86 firmware for booting Linux kernels
  - [radare2](https://github.com/radare/radare2), unix-like reverse engineering framework and commandline tools (not the default)
  - [rmw](https://remove-to-waste.info), safe-remove utility for the command line
@@ -142,6 +146,7 @@ format files
  - [scrcpy](https://github.com/Genymobile/scrcpy), a cross platform application that provides display and control of Android devices connected on USB or over TCP/IP
  - [Sequeler](https://github.com/Alecaddd/sequeler), a friendly SQL client for Linux, built with Vala and Gtk
  - [Siril](https://gitlab.com/free-astro/siril), an image processing software for amateur astronomy
+ - [slapt-get](https://github.com/jaos/slapt-get), an APT like system for Slackware package management
  - [Spot](https://github.com/xou816/spot), Rust based Spotify client for the GNOME desktop
  - [SSHFS](https://github.com/libfuse/sshfs), allows you to mount a remote filesystem using SFTP
  - [sway](https://github.com/swaywm/sway), i3-compatible Wayland compositor

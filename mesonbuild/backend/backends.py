@@ -18,6 +18,7 @@ from dataclasses import dataclass, InitVar
 from functools import lru_cache
 from itertools import chain
 from pathlib import Path
+import copy
 import enum
 import json
 import os
@@ -283,7 +284,7 @@ class Backend:
         if isinstance(t, build.CustomTarget):
             if warn_multi_output and len(t.get_outputs()) != 1:
                 mlog.warning(f'custom_target {t.name!r} has more than one output! '
-                             'Using the first one.')
+                             f'Using the first one. Consider using `{t.name}[0]`.')
             filename = t.get_outputs()[0]
         elif isinstance(t, build.CustomTargetIndex):
             filename = t.get_outputs()[0]
@@ -1107,10 +1108,7 @@ class Backend:
                         break
 
             is_cross = self.environment.is_cross_build(test_for_machine)
-            if is_cross and self.environment.need_exe_wrapper():
-                exe_wrapper = self.environment.get_exe_wrapper()
-            else:
-                exe_wrapper = None
+            exe_wrapper = self.environment.get_exe_wrapper()
             machine = self.environment.machines[exe.for_machine]
             if machine.is_windows() or machine.is_cygwin():
                 extra_bdeps: T.List[T.Union[build.BuildTarget, build.CustomTarget]] = []
@@ -1141,9 +1139,21 @@ class Backend:
                     cmd_args.extend(self.construct_target_rel_paths(a, t.workdir))
                 else:
                     raise MesonException('Bad object in test command.')
+
+            t_env = copy.deepcopy(t.env)
+            if not machine.is_windows() and not machine.is_cygwin() and not machine.is_darwin():
+                ld_lib_path: T.Set[str] = set()
+                for d in depends:
+                    if isinstance(d, build.BuildTarget):
+                        for l in d.get_all_link_deps():
+                            if isinstance(l, build.SharedLibrary):
+                                ld_lib_path.add(os.path.join(self.environment.get_build_dir(), l.get_subdir()))
+                if ld_lib_path:
+                    t_env.prepend('LD_LIBRARY_PATH', list(ld_lib_path), ':')
+
             ts = TestSerialisation(t.get_name(), t.project_name, t.suite, cmd, is_cross,
                                    exe_wrapper, self.environment.need_exe_wrapper(),
-                                   t.is_parallel, cmd_args, t.env,
+                                   t.is_parallel, cmd_args, t_env,
                                    t.should_fail, t.timeout, t.workdir,
                                    extra_paths, t.protocol, t.priority,
                                    isinstance(exe, build.Target),
@@ -1177,11 +1187,19 @@ class Backend:
         return outputs
 
     def generate_depmf_install(self, d: InstallData) -> None:
-        if self.build.dep_manifest_name is None:
-            return
+        depmf_path = self.build.dep_manifest_name
+        if depmf_path is None:
+            option_dir = self.environment.coredata.get_option(OptionKey('licensedir'))
+            assert isinstance(option_dir, str), 'for mypy'
+            if option_dir:
+                depmf_path = os.path.join(option_dir, 'depmf.json')
+            else:
+                return
         ifilename = os.path.join(self.environment.get_build_dir(), 'depmf.json')
-        ofilename = os.path.join(self.environment.get_prefix(), self.build.dep_manifest_name)
-        out_name = os.path.join('{prefix}', self.build.dep_manifest_name)
+        ofilename = os.path.join(self.environment.get_prefix(), depmf_path)
+        odirname = os.path.join(self.environment.get_prefix(), os.path.dirname(depmf_path))
+        out_name = os.path.join('{prefix}', depmf_path)
+        out_dir = os.path.join('{prefix}', os.path.dirname(depmf_path))
         mfobj = {'type': 'dependency manifest', 'version': '1.0',
                  'projects': {k: v.to_json() for k, v in self.build.dep_manifest.items()}}
         with open(ifilename, 'w', encoding='utf-8') as f:
@@ -1189,6 +1207,12 @@ class Backend:
         # Copy file from, to, and with mode unchanged
         d.data.append(InstallDataBase(ifilename, ofilename, out_name, None, '',
                                       tag='devel', data_type='depmf'))
+        for m in self.build.dep_manifest.values():
+            for ifilename, name in m.license_files:
+                ofilename = os.path.join(odirname, name.relative_name())
+                out_name = os.path.join(out_dir, name.relative_name())
+                d.data.append(InstallDataBase(ifilename, ofilename, out_name, None,
+                                              m.subproject, tag='devel', data_type='depmf'))
 
     def get_regen_filelist(self) -> T.List[str]:
         '''List of all files whose alteration means that the build
@@ -1837,14 +1861,12 @@ class Backend:
         env = build.EnvironmentVariables()
         extra_paths = set()
         library_paths = set()
+        build_machine = self.environment.machines[MachineChoice.BUILD]
         host_machine = self.environment.machines[MachineChoice.HOST]
-        need_exe_wrapper = self.environment.need_exe_wrapper()
-        need_wine = need_exe_wrapper and host_machine.is_windows()
+        need_wine = not build_machine.is_windows() and host_machine.is_windows()
         for t in self.build.get_targets().values():
-            cross_built = not self.environment.machines.matches_build_machine(t.for_machine)
-            can_run = not cross_built or not need_exe_wrapper or need_wine
             in_default_dir = t.should_install() and not t.get_install_dir()[2]
-            if not can_run or not in_default_dir:
+            if t.for_machine != MachineChoice.HOST or not in_default_dir:
                 continue
             tdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(t))
             if isinstance(t, build.Executable):
@@ -1861,18 +1883,23 @@ class Backend:
                 # LD_LIBRARY_PATH. This allows running system applications using
                 # that library.
                 library_paths.add(tdir)
+        if need_wine:
+            # Executable paths should be in both PATH and WINEPATH.
+            # - Having them in PATH makes bash completion find it,
+            #   and make running "foo.exe" find it when wine-binfmt is installed.
+            # - Having them in WINEPATH makes "wine foo.exe" find it.
+            library_paths.update(extra_paths)
         if library_paths:
-            if host_machine.is_windows() or host_machine.is_cygwin():
+            if need_wine:
+                env.prepend('WINEPATH', list(library_paths), separator=';')
+            elif host_machine.is_windows() or host_machine.is_cygwin():
                 extra_paths.update(library_paths)
             elif host_machine.is_darwin():
                 env.prepend('DYLD_LIBRARY_PATH', list(library_paths))
             else:
                 env.prepend('LD_LIBRARY_PATH', list(library_paths))
         if extra_paths:
-            if need_wine:
-                env.prepend('WINEPATH', list(extra_paths), separator=';')
-            else:
-                env.prepend('PATH', list(extra_paths))
+            env.prepend('PATH', list(extra_paths))
         return env
 
     def compiler_to_generator(self, target: build.BuildTarget,

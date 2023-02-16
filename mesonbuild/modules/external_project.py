@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from pathlib import Path
 import os
@@ -33,9 +34,10 @@ if T.TYPE_CHECKING:
     from typing_extensions import TypedDict
 
     from . import ModuleState
+    from .._typing import ImmutableListProtocol
+    from ..build import BuildTarget, CustomTarget
     from ..interpreter import Interpreter
     from ..interpreterbase import TYPE_var
-    from ..build import BuildTarget, CustomTarget
 
     class Dependency(TypedDict):
 
@@ -51,6 +53,9 @@ if T.TYPE_CHECKING:
 
 
 class ExternalProject(NewExtensionModule):
+
+    make: ImmutableListProtocol[str]
+
     def __init__(self,
                  state: 'ModuleState',
                  configure_command: str,
@@ -191,7 +196,7 @@ class ExternalProject(NewExtensionModule):
             missing.update(missing_vars)
             out.append(arg)
         if missing:
-            var_list = ", ".join(map(repr, sorted(missing)))
+            var_list = ", ".join(repr(m) for m in sorted(missing))
             raise EnvironmentException(
                 f"Variables {var_list} in configure options are missing.")
         return out
@@ -269,7 +274,7 @@ class ExternalProject(NewExtensionModule):
         link_args = [f'-L{abs_libdir}', f'-l{libname}']
         sources = self.target
         dep = InternalDependency(version, [], compile_args, link_args, [],
-                                 [], [sources], [], {}, [], [])
+                                 [], [sources], [], {}, [], [], [])
         return dep
 
 

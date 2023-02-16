@@ -541,7 +541,7 @@ class XCodeBackend(backends.Backend):
         self.custom_aggregate_targets = {}
         self.build_all_tdep_id = self.gen_id()
         # FIXME: filter out targets that are not built by default.
-        target_dependencies = list(map(lambda t: self.pbx_dep_map[t], self.build_targets))
+        target_dependencies = [self.pbx_dep_map[t] for t in self.build_targets]
         custom_target_dependencies = [self.pbx_custom_dep_map[t] for t in self.custom_targets]
         aggregated_targets = []
         aggregated_targets.append((self.all_id, 'ALL_BUILD',
@@ -1219,6 +1219,8 @@ class XCodeBackend(backends.Backend):
                     generator_id += 1
 
     def generate_single_generator_phase(self, tname, t, genlist, generator_id, objects_dict):
+        # TODO: this should be rewritten to use the meson wrapper, like the other generators do
+        # Currently it doesn't handle a host binary that requires an exe wrapper correctly.
         generator = genlist.get_generator()
         exe = generator.get_exe()
         exe_arr = self.build_target_to_cmd_array(exe)

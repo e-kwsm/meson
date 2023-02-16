@@ -13,6 +13,7 @@
 # limitations under the License.
 
 # This file contains the detection logic for miscellaneous external dependencies.
+from __future__ import annotations
 
 from pathlib import Path
 import functools
@@ -214,7 +215,7 @@ class Python3DependencySystem(SystemDependency):
                 return None
         elif pyplat == 'win32':
             return '32'
-        elif pyplat in ('win64', 'win-amd64'):
+        elif pyplat in {'win64', 'win-amd64'}:
             return '64'
         mlog.log(f'Unknown Windows Python platform {pyplat!r}')
         return None
@@ -293,13 +294,19 @@ class PcapDependencyConfigTool(ConfigToolDependency):
     tools = ['pcap-config']
     tool_name = 'pcap-config'
 
+    # version 1.10.2 added error checking for invalid arguments
+    # version 1.10.3 will hopefully add actual support for --version
+    skip_version = '--help'
+
     def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any]):
         super().__init__(name, environment, kwargs)
         if not self.is_found:
             return
         self.compile_args = self.get_config_value(['--cflags'], 'compile_args')
         self.link_args = self.get_config_value(['--libs'], 'link_args')
-        self.version = self.get_pcap_lib_version()
+        if self.version is None:
+            # older pcap-config versions don't support this
+            self.version = self.get_pcap_lib_version()
 
     def get_pcap_lib_version(self) -> T.Optional[str]:
         # Since we seem to need to run a program to discover the pcap version,

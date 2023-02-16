@@ -56,6 +56,7 @@ These are return values of the `get_linker_id` method in a compiler object.
 | ld.solaris | Solaris and illumos                         |
 | ld.wasm    | emscripten's wasm-ld linker                 |
 | ld64       | Apple ld64                                  |
+| ld64.lld   | The LLVM linker, with the ld64 interface    |
 | link       | MSVC linker                                 |
 | lld-link   | The LLVM linker, with the MSVC interface    |
 | xilink     | Used with Intel-cl only, MSVC like          |
@@ -258,6 +259,7 @@ which are supported by GCC, Clang, and other compilers.
 | sentinel⁵                |
 | unused                   |
 | used                     |
+| vector_size⁶             |
 | visibility*              |
 | visibility:default†      |
 | visibility:hidden†       |
@@ -279,6 +281,8 @@ which are supported by GCC, Clang, and other compilers.
 ⁴ *New in 0.62.0*
 
 ⁵ *New in 0.63.0*
+
+⁶ *New in 1.1.0*
 
 ### MSVC __declspec
 

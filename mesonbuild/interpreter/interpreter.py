@@ -83,6 +83,7 @@ from .type_checking import (
     REQUIRED_KW,
     SOURCES_KW,
     VARIABLES_KW,
+    TEST_KWS,
     NoneType,
     in_set_validator,
     env_convertor_with_method
@@ -120,6 +121,8 @@ if T.TYPE_CHECKING:
     SourceOutputs = T.Union[mesonlib.File, build.GeneratedList,
                             build.BuildTarget, build.CustomTargetIndex, build.CustomTarget,
                             build.ExtractedObjects, build.GeneratedList, build.StructuredSources]
+
+    BuildTargetSource = T.Union[mesonlib.FileOrString, build.GeneratedTypes, build.StructuredSources]
 
 
 def _project_version_validator(value: T.Union[T.List, str, mesonlib.File, None]) -> T.Optional[str]:
@@ -222,25 +225,6 @@ known_build_target_kwargs = (
     build.known_jar_kwargs |
     {'target_type'}
 )
-
-TEST_KWARGS: T.List[KwargInfo] = [
-    KwargInfo('args', ContainerTypeInfo(list, (str, mesonlib.File, build.BuildTarget, build.CustomTarget, build.CustomTargetIndex)),
-              listify=True, default=[]),
-    KwargInfo('should_fail', bool, default=False),
-    KwargInfo('timeout', int, default=30),
-    KwargInfo('workdir', (str, NoneType), default=None,
-              validator=lambda x: 'must be an absolute path' if not os.path.isabs(x) else None),
-    KwargInfo('protocol', str,
-              default='exitcode',
-              validator=in_set_validator({'exitcode', 'tap', 'gtest', 'rust'}),
-              since_values={'gtest': '0.55.0', 'rust': '0.57.0'}),
-    KwargInfo('priority', int, default=0, since='0.52.0'),
-    # TODO: env needs reworks of the way the environment variable holder itself works probably
-    ENV_KW,
-    DEPENDS_KW.evolve(since='0.46.0'),
-    KwargInfo('suite', ContainerTypeInfo(list, str), listify=True, default=['']),  # yes, a list of empty string
-    KwargInfo('verbose', bool, default=False, since='0.62.0'),
-]
 
 class InterpreterRuleRelaxation(Enum):
     ''' Defines specific relaxations of the Meson rules.
@@ -688,12 +672,14 @@ class Interpreter(InterpreterBase, HoldableObject):
         SOURCES_KW,
         VARIABLES_KW.evolve(since='0.54.0', since_values={list: '0.56.0'}),
         KwargInfo('version', (str, NoneType)),
+        KwargInfo('objects', ContainerTypeInfo(list, build.ExtractedObjects), listify=True, default=[], since='1.1.0'),
     )
     def func_declare_dependency(self, node, args, kwargs):
         deps = kwargs['dependencies']
         incs = self.extract_incdirs(kwargs)
         libs = kwargs['link_with']
         libs_whole = kwargs['link_whole']
+        objects = kwargs['objects']
         sources = self.source_strings_to_files(kwargs['sources'])
         compile_args = kwargs['compile_args']
         link_args = kwargs['link_args']
@@ -721,7 +707,8 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         dep = dependencies.InternalDependency(version, incs, compile_args,
                                               link_args, libs, libs_whole, sources, deps,
-                                              variables, d_module_versions, d_import_dirs)
+                                              variables, d_module_versions, d_import_dirs,
+                                              objects)
         return dep
 
     @typed_pos_args('assert', bool, optargs=[str])
@@ -1150,7 +1137,8 @@ class Interpreter(InterpreterBase, HoldableObject):
             validator=_project_version_validator,
             convertor=lambda x: x[0] if isinstance(x, list) else x,
         ),
-        KwargInfo('license', ContainerTypeInfo(list, str), default=['unknown'], listify=True),
+        KwargInfo('license', (ContainerTypeInfo(list, str), NoneType), default=None, listify=True),
+        KwargInfo('license_files', ContainerTypeInfo(list, str), default=[], listify=True, since='1.1.0'),
         KwargInfo('subproject_dir', str, default='subprojects'),
     )
     def func_project(self, node: mparser.FunctionNode, args: T.Tuple[str, T.List[str]], kwargs: 'kwtypes.Project') -> None:
@@ -1216,8 +1204,20 @@ class Interpreter(InterpreterBase, HoldableObject):
 
         if self.build.project_version is None:
             self.build.project_version = self.project_version
-        proj_license = kwargs['license']
-        self.build.dep_manifest[proj_name] = build.DepManifest(self.project_version, proj_license)
+
+        if kwargs['license'] is None:
+            proj_license = ['unknown']
+            if kwargs['license_files']:
+                raise InvalidArguments('Project `license` name must be specified when `license_files` is set')
+        else:
+            proj_license = kwargs['license']
+        proj_license_files = []
+        for i in self.source_strings_to_files(kwargs['license_files']):
+            ifname = i.absolute_path(self.environment.source_dir,
+                                     self.environment.build_dir)
+            proj_license_files.append((ifname, i))
+        self.build.dep_manifest[proj_name] = build.DepManifest(self.project_version, proj_license,
+                                                               proj_license_files, self.subproject)
         if self.subproject in self.build.projects:
             raise InvalidCode('Second call to project().')
 
@@ -1393,9 +1393,9 @@ class Interpreter(InterpreterBase, HoldableObject):
     @noKwargs
     @noPosargs
     def func_exception(self, node, args, kwargs):
-        raise Exception()
+        raise RuntimeError('unit test traceback :)')
 
-    def add_languages(self, args: T.Sequence[str], required: bool, for_machine: MachineChoice) -> bool:
+    def add_languages(self, args: T.List[str], required: bool, for_machine: MachineChoice) -> bool:
         success = self.add_languages_for(args, required, for_machine)
         if not self.coredata.is_cross_build():
             self.coredata.copy_build_options_from_regular_ones()
@@ -1484,7 +1484,9 @@ class Interpreter(InterpreterBase, HoldableObject):
             if not isinstance(p, str):
                 raise InterpreterException('Executable name must be a string')
             prog = ExternalProgram.from_bin_list(self.environment, for_machine, p)
-            if prog.found():
+            # if the machine file specified something, it may be a regular
+            # not-found program but we still want to return that
+            if not isinstance(prog, NonExistingExternalProgram):
                 return prog
         return None
 
@@ -1706,7 +1708,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         assert isinstance(d, Dependency)
         if not d.found() and not_found_message:
             self.message_impl([not_found_message])
-            self.message_impl([not_found_message])
         # Ensure the correct include type
         if 'include_type' in kwargs:
             wanted = kwargs['include_type']
@@ -1733,39 +1734,64 @@ class Interpreter(InterpreterBase, HoldableObject):
     @FeatureNewKwargs('executable', '0.56.0', ['win_subsystem'])
     @FeatureDeprecatedKwargs('executable', '0.56.0', ['gui_app'], extra_message="Use 'win_subsystem' instead.")
     @permittedKwargs(build.known_exe_kwargs)
-    def func_executable(self, node, args, kwargs):
+    @typed_pos_args('executable', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_executable(self, node: mparser.BaseNode,
+                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        kwargs) -> build.Executable:
         return self.build_target(node, args, kwargs, build.Executable)
 
     @permittedKwargs(build.known_stlib_kwargs)
-    def func_static_lib(self, node, args, kwargs):
+    @typed_pos_args('static_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_static_lib(self, node: mparser.BaseNode,
+                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        kwargs) -> build.StaticLibrary:
         return self.build_target(node, args, kwargs, build.StaticLibrary)
 
     @permittedKwargs(build.known_shlib_kwargs)
-    def func_shared_lib(self, node, args, kwargs):
+    @typed_pos_args('shared_library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_shared_lib(self, node: mparser.BaseNode,
+                        args: T.Tuple[str, T.List[BuildTargetSource]],
+                        kwargs) -> build.SharedLibrary:
         holder = self.build_target(node, args, kwargs, build.SharedLibrary)
         holder.shared_library_only = True
         return holder
 
     @permittedKwargs(known_library_kwargs)
-    def func_both_lib(self, node, args, kwargs):
+    @typed_pos_args('both_libraries', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_both_lib(self, node: mparser.BaseNode,
+                      args: T.Tuple[str, T.List[BuildTargetSource]],
+                      kwargs) -> build.BothLibraries:
         return self.build_both_libraries(node, args, kwargs)
 
     @FeatureNew('shared_module', '0.37.0')
     @permittedKwargs(build.known_shmod_kwargs)
-    def func_shared_module(self, node, args, kwargs):
+    @typed_pos_args('shared_module', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_shared_module(self, node: mparser.BaseNode,
+                           args: T.Tuple[str, T.List[BuildTargetSource]],
+                           kwargs) -> build.SharedModule:
         return self.build_target(node, args, kwargs, build.SharedModule)
 
     @permittedKwargs(known_library_kwargs)
-    def func_library(self, node, args, kwargs):
+    @typed_pos_args('library', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_library(self, node: mparser.BaseNode,
+                     args: T.Tuple[str, T.List[BuildTargetSource]],
+                     kwargs) -> build.Executable:
         return self.build_library(node, args, kwargs)
 
     @permittedKwargs(build.known_jar_kwargs)
-    def func_jar(self, node, args, kwargs):
+    @typed_pos_args('jar', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.ExtractedObjects, build.BuildTarget))
+    def func_jar(self, node: mparser.BaseNode,
+                 args: T.Tuple[str, T.List[T.Union[str, mesonlib.File, build.GeneratedTypes]]],
+                 kwargs) -> build.Jar:
         return self.build_target(node, args, kwargs, build.Jar)
 
     @FeatureNewKwargs('build_target', '0.40.0', ['link_whole', 'override_options'])
     @permittedKwargs(known_build_target_kwargs)
-    def func_build_target(self, node, args, kwargs):
+    @typed_pos_args('build_target', str, varargs=(str, mesonlib.File, build.CustomTarget, build.CustomTargetIndex, build.GeneratedList, build.StructuredSources, build.ExtractedObjects, build.BuildTarget))
+    def func_build_target(self, node: mparser.BaseNode,
+                          args: T.Tuple[str, T.List[BuildTargetSource]],
+                          kwargs) -> T.Union[build.Executable, build.StaticLibrary, build.SharedLibrary,
+                                             build.SharedModule, build.BothLibraries, build.Jar]:
         if 'target_type' not in kwargs:
             raise InterpreterException('Missing target_type keyword argument')
         target_type = kwargs.pop('target_type')
@@ -2009,9 +2035,6 @@ class Interpreter(InterpreterBase, HoldableObject):
         tg = build.RunTarget(name, all_args, kwargs['depends'], self.subdir, self.subproject, self.environment,
                              kwargs['env'])
         self.add_target(name, tg)
-        full_name = (self.subproject, name)
-        assert full_name not in self.build.run_target_names
-        self.build.run_target_names.add(full_name)
         return tg
 
     @FeatureNew('alias_target', '0.52.0')
@@ -2051,14 +2074,14 @@ class Interpreter(InterpreterBase, HoldableObject):
         return gen
 
     @typed_pos_args('benchmark', str, (build.Executable, build.Jar, ExternalProgram, mesonlib.File))
-    @typed_kwargs('benchmark', *TEST_KWARGS)
+    @typed_kwargs('benchmark', *TEST_KWS)
     def func_benchmark(self, node: mparser.BaseNode,
                        args: T.Tuple[str, T.Union[build.Executable, build.Jar, ExternalProgram, mesonlib.File]],
                        kwargs: 'kwtypes.FuncBenchmark') -> None:
         self.add_test(node, args, kwargs, False)
 
     @typed_pos_args('test', str, (build.Executable, build.Jar, ExternalProgram, mesonlib.File))
-    @typed_kwargs('test', *TEST_KWARGS, KwargInfo('is_parallel', bool, default=True))
+    @typed_kwargs('test', *TEST_KWS, KwargInfo('is_parallel', bool, default=True))
     def func_test(self, node: mparser.BaseNode,
                   args: T.Tuple[str, T.Union[build.Executable, build.Jar, ExternalProgram, mesonlib.File]],
                   kwargs: 'kwtypes.FuncTest') -> None:
@@ -2555,7 +2578,7 @@ class Interpreter(InterpreterBase, HoldableObject):
                     mesonlib.do_conf_file(inputs_abs[0], ofile_abs, conf,
                                           fmt, file_encoding)
                 if missing_variables:
-                    var_list = ", ".join(map(repr, sorted(missing_variables)))
+                    var_list = ", ".join(repr(m) for m in sorted(missing_variables))
                     mlog.warning(
                         f"The variable(s) {var_list} in the input file '{inputs[0]}' are not "
                         "present in the given configuration data.", location=node)
@@ -2914,10 +2937,12 @@ class Interpreter(InterpreterBase, HoldableObject):
             return
         if (self.coredata.options[OptionKey('b_lundef')].value and
                 self.coredata.options[OptionKey('b_sanitize')].value != 'none'):
-            mlog.warning('''Trying to use {} sanitizer on Clang with b_lundef.
-This will probably not work.
-Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey('b_sanitize')].value),
-                         location=self.current_node)
+            value = self.coredata.options[OptionKey('b_sanitize')].value
+            mlog.warning(textwrap.dedent(f'''\
+                    Trying to use {value} sanitizer on Clang with b_lundef.
+                    This will probably not work.
+                    Try setting b_lundef to false instead.'''),
+                location=self.current_node)  # noqa: E128
 
     # Check that the indicated file is within the same subproject
     # as we currently are. This is to stop people doing
@@ -3064,14 +3089,6 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
         shared_lib = self.build_target(node, args, kwargs, build.SharedLibrary)
         static_lib = self.build_target(node, args, kwargs, build.StaticLibrary)
 
-        # Check if user forces non-PIC static library.
-        pic = True
-        key = OptionKey('b_staticpic')
-        if 'pic' in kwargs:
-            pic = kwargs['pic']
-        elif key in self.environment.coredata.options:
-            pic = self.environment.coredata.options[key].value
-
         if self.backend.name == 'xcode':
             # Xcode is a bit special in that you can't (at least for the moment)
             # form a library only from object file inputs. The simple but inefficient
@@ -3081,7 +3098,7 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
             # issue for you.
             reuse_object_files = False
         else:
-            reuse_object_files = pic
+            reuse_object_files = static_lib.pic
 
         if reuse_object_files:
             # Replace sources with objects from the shared library to avoid
@@ -3118,12 +3135,22 @@ Try setting b_lundef to false instead.'''.format(self.coredata.options[OptionKey
 
         build_target_decorator_caller(self, node, args, kwargs)
 
-        if not args:
-            raise InterpreterException('Target does not have a name.')
-        name, *sources = args
+        name, sources = args
         for_machine = self.machine_from_native_kwarg(kwargs)
         if 'sources' in kwargs:
             sources += listify(kwargs['sources'])
+        if any(isinstance(s, build.BuildTarget) for s in sources):
+            FeatureDeprecated.single_use('passing references to built targets as a source file', '1.1.0', self.subproject,
+                                         'consider using `link_with` or `link_whole` if you meant to link, or dropping them as otherwise they are ignored',
+                                         node)
+        if any(isinstance(s, build.ExtractedObjects) for s in sources):
+            FeatureDeprecated.single_use('passing object files as sources', '1.1.0', self.subproject,
+                                         'pass these to the `objects` keyword instead, they are ignored when passed as sources',
+                                         node)
+        # Go ahead and drop these here, since they're only allowed through for
+        # backwards compatibility anyway
+        sources = [s for s in sources
+                   if not isinstance(s, (build.BuildTarget, build.ExtractedObjects))]
         sources = self.source_strings_to_files(sources)
         objs = extract_as_list(kwargs, 'objects')
         kwargs['dependencies'] = extract_as_list(kwargs, 'dependencies')

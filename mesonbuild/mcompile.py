@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 """Entrypoint script for backend agnostic compile."""
 
@@ -190,11 +191,9 @@ def get_parsed_args_vs(options: 'argparse.Namespace', builddir: Path) -> T.Tuple
 
     if options.targets:
         intro_data = parse_introspect_data(builddir)
-        has_run_target = any(map(
-            lambda t:
-                get_target_from_intro_data(ParsedTargetName(t), builddir, intro_data)['type'] == 'run',
-            options.targets
-        ))
+        has_run_target = any(
+            get_target_from_intro_data(ParsedTargetName(t), builddir, intro_data)['type'] == 'run'
+            for t in options.targets)
 
         if has_run_target:
             # `run` target can't be used the same way as other targets on `vs` backend.

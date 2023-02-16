@@ -117,15 +117,15 @@ known_shmod_kwargs = known_build_target_kwargs | {'vs_module_defs'}
 known_stlib_kwargs = known_build_target_kwargs | {'pic', 'prelink'}
 known_jar_kwargs = known_exe_kwargs | {'main_class', 'java_resources'}
 
-def _process_install_tag(install_tag: T.Optional[T.Sequence[T.Optional[str]]],
+def _process_install_tag(install_tag: T.Optional[T.List[T.Optional[str]]],
                          num_outputs: int) -> T.List[T.Optional[str]]:
     _install_tag: T.List[T.Optional[str]]
     if not install_tag:
         _install_tag = [None] * num_outputs
     elif len(install_tag) == 1:
-        _install_tag = list(install_tag) * num_outputs
+        _install_tag = install_tag * num_outputs
     else:
-        _install_tag = list(install_tag)
+        _install_tag = install_tag
     return _install_tag
 
 
@@ -216,11 +216,14 @@ class InstallDir(HoldableObject):
 class DepManifest:
     version: str
     license: T.List[str]
+    license_files: T.List[T.Tuple[str, File]]
+    subproject: str
 
     def to_json(self) -> T.Dict[str, T.Union[str, T.List[str]]]:
         return {
             'version': self.version,
             'license': self.license,
+            'license_files': [l[1].relative_name() for l in self.license_files],
         }
 
 
@@ -236,7 +239,6 @@ class Build:
         self.environment = environment
         self.projects = {}
         self.targets: 'T.OrderedDict[str, T.Union[CustomTarget, BuildTarget]]' = OrderedDict()
-        self.run_target_names: T.Set[T.Tuple[str, str]] = set()
         self.global_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.global_link_args: PerMachine[T.Dict[str, T.List[str]]] = PerMachine({}, {})
         self.projects_args: PerMachine[T.Dict[str, T.Dict[str, T.List[str]]]] = PerMachine({}, {})
@@ -775,12 +777,11 @@ class BuildTarget(Target):
         for s in objects:
             if isinstance(s, (str, File, ExtractedObjects)):
                 self.objects.append(s)
-            elif isinstance(s, (GeneratedList, CustomTarget)):
-                msg = 'Generated files are not allowed in the \'objects\' kwarg ' + \
-                    f'for target {self.name!r}.\nIt is meant only for ' + \
-                    'pre-built object files that are shipped with the\nsource ' + \
-                    'tree. Try adding it in the list of sources.'
-                raise InvalidArguments(msg)
+            elif isinstance(s, (CustomTarget, CustomTargetIndex, GeneratedList)):
+                non_objects = [o for o in s.get_outputs() if not is_object(o)]
+                if non_objects:
+                    raise InvalidArguments(f'Generated file {non_objects[0]} in the \'objects\' kwarg is not an object.')
+                self.generated.append(s)
             else:
                 raise InvalidArguments(f'Bad object of type {type(s).__name__!r} in target {self.name!r}.')
 
@@ -1293,6 +1294,7 @@ class BuildTarget(Target):
                 # Those parts that are internal.
                 self.process_sourcelist(dep.sources)
                 self.add_include_dirs(dep.include_directories, dep.get_include_type())
+                self.objects.extend(dep.objects)
                 for l in dep.libraries:
                     self.link(l)
                 for l in dep.whole_libraries:
@@ -1303,7 +1305,7 @@ class BuildTarget(Target):
                                                               [],
                                                               dep.get_compile_args(),
                                                               dep.get_link_args(),
-                                                              [], [], [], [], {}, [], [])
+                                                              [], [], [], [], {}, [], [], [])
                     self.external_deps.append(extpart)
                 # Deps of deps.
                 self.add_deps(dep.ext_deps)
@@ -1829,8 +1831,8 @@ class Executable(BuildTarget):
                 self.suffix = 'abs'
             elif ('c' in self.compilers and self.compilers['c'].get_id().startswith('xc16')):
                 self.suffix = 'elf'
-            elif ('c' in self.compilers and self.compilers['c'].get_id() in ('ti', 'c2000') or
-                  'cpp' in self.compilers and self.compilers['cpp'].get_id() in ('ti', 'c2000')):
+            elif ('c' in self.compilers and self.compilers['c'].get_id() in {'ti', 'c2000'} or
+                  'cpp' in self.compilers and self.compilers['cpp'].get_id() in {'ti', 'c2000'}):
                 self.suffix = 'out'
             else:
                 self.suffix = machine.get_exe_suffix()
@@ -1906,6 +1908,15 @@ class Executable(BuildTarget):
         Since you can override ExternalProgram instances with Executables.
         """
         return self.outputs
+
+    def get_path(self) -> str:
+        """Provides compatibility with ExternalProgram."""
+        return os.path.join(self.subdir, self.filename)
+
+    def found(self) -> bool:
+        """Provides compatibility with ExternalProgram."""
+        return True
+
 
 class StaticLibrary(BuildTarget):
     known_kwargs = known_stlib_kwargs
@@ -2176,10 +2187,10 @@ class SharedLibrary(BuildTarget):
                     raise InvalidArguments('Shared library darwin_versions: must be X.Y.Z where '
                                            'X, Y, Z are numbers, and Y and Z are optional')
                 parts = v.split('.')
-                if len(parts) in (1, 2, 3) and int(parts[0]) > 65535:
+                if len(parts) in {1, 2, 3} and int(parts[0]) > 65535:
                     raise InvalidArguments('Shared library darwin_versions: must be X.Y.Z '
                                            'where X is [0, 65535] and Y, Z are optional')
-                if len(parts) in (2, 3) and int(parts[1]) > 255:
+                if len(parts) in {2, 3} and int(parts[1]) > 255:
                     raise InvalidArguments('Shared library darwin_versions: must be X.Y.Z '
                                            'where Y is [0, 255] and Y, Z are optional')
                 if len(parts) == 3 and int(parts[2]) > 255:
@@ -2194,11 +2205,6 @@ class SharedLibrary(BuildTarget):
         super().process_kwargs(kwargs)
 
         if not self.environment.machines[self.for_machine].is_android():
-            supports_versioning = True
-        else:
-            supports_versioning = False
-
-        if supports_versioning:
             # Shared library version
             if 'version' in kwargs:
                 self.ltversion = kwargs['version']
@@ -2422,9 +2428,9 @@ class CustomTarget(Target, CommandBase):
                  env: T.Optional[EnvironmentVariables] = None,
                  feed: bool = False,
                  install: bool = False,
-                 install_dir: T.Optional[T.Sequence[T.Union[str, Literal[False]]]] = None,
+                 install_dir: T.Optional[T.List[T.Union[str, Literal[False]]]] = None,
                  install_mode: T.Optional[FileMode] = None,
-                 install_tag: T.Optional[T.Sequence[T.Optional[str]]] = None,
+                 install_tag: T.Optional[T.List[T.Optional[str]]] = None,
                  absolute_paths: bool = False,
                  backend: T.Optional['Backend'] = None,
                  ):
@@ -2603,9 +2609,10 @@ class CompileTarget(BuildTarget):
                  subdir: str,
                  subproject: str,
                  environment: environment.Environment,
-                 sources: T.List[File],
+                 sources: T.List['SourceOutputs'],
                  output_templ: str,
                  compiler: Compiler,
+                 backend: Backend,
                  kwargs):
         compilers = {compiler.get_language(): compiler}
         super().__init__(name, subdir, subproject, compiler.for_machine,
@@ -2614,11 +2621,13 @@ class CompileTarget(BuildTarget):
         self.compiler = compiler
         self.output_templ = output_templ
         self.outputs = []
-        for f in sources:
-            plainname = os.path.basename(f.fname)
-            basename = os.path.splitext(plainname)[0]
-            self.outputs.append(output_templ.replace('@BASENAME@', basename).replace('@PLAINNAME@', plainname))
-        self.sources_map = dict(zip(sources, self.outputs))
+        self.sources_map: T.Dict[File, str] = {}
+        for f in self.sources:
+            self._add_output(f)
+        for gensrc in self.generated:
+            for s in gensrc.get_outputs():
+                rel_src = backend.get_target_generated_dir(self, gensrc, s)
+                self._add_output(File.from_built_relative(rel_src))
 
     def type_suffix(self) -> str:
         return "@compile"
@@ -2626,6 +2635,13 @@ class CompileTarget(BuildTarget):
     @property
     def is_unity(self) -> bool:
         return False
+
+    def _add_output(self, f: File) -> None:
+        plainname = os.path.basename(f.fname)
+        basename = os.path.splitext(plainname)[0]
+        o = self.output_templ.replace('@BASENAME@', basename).replace('@PLAINNAME@', plainname)
+        self.outputs.append(o)
+        self.sources_map[f] = o
 
 
 class RunTarget(Target, CommandBase):

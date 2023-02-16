@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from functools import lru_cache
 import collections
@@ -20,16 +21,12 @@ import os
 import re
 import typing as T
 
-from . import mesonlib
-
 if T.TYPE_CHECKING:
     from .linkers import StaticLinker
     from .compilers import Compiler
 
-UNIXY_COMPILER_INTERNAL_LIBS = ['m', 'c', 'pthread', 'dl', 'rt']  # type: T.List[str]
-# execinfo is a compiler lib on FreeBSD and NetBSD
-if mesonlib.is_freebsd() or mesonlib.is_netbsd():
-    UNIXY_COMPILER_INTERNAL_LIBS.append('execinfo')
+# execinfo is a compiler lib on BSD
+UNIXY_COMPILER_INTERNAL_LIBS = ['m', 'c', 'pthread', 'dl', 'rt', 'execinfo']  # type: T.List[str]
 
 
 class Dedup(enum.Enum):

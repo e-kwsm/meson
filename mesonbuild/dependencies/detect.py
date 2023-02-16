@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from .base import ExternalDependency, DependencyException, DependencyMethods, NotFoundDependency
 from .cmake import CMakeDependency
@@ -52,8 +53,8 @@ def get_dep_identifier(name: str, kwargs: T.Dict[str, T.Any]) -> 'TV_DepID':
         # 'default_options' is only used in fallback case
         # 'not_found_message' has no impact on the dependency lookup
         # 'include_type' is handled after the dependency lookup
-        if key in ('version', 'native', 'required', 'fallback', 'allow_fallback', 'default_options',
-                   'not_found_message', 'include_type'):
+        if key in {'version', 'native', 'required', 'fallback', 'allow_fallback', 'default_options',
+                   'not_found_message', 'include_type'}:
             continue
         # All keyword arguments are strings, ints, or lists (or lists of lists)
         if isinstance(value, list):

@@ -59,9 +59,9 @@ if T.TYPE_CHECKING:
     from ..backend.backends import Backend
     from ..environment import Environment
 
-TYPE_mixed = T.Union[str, int, bool, Path, BaseNode]
-TYPE_mixed_list = T.Union[TYPE_mixed, T.Sequence[TYPE_mixed]]
-TYPE_mixed_kwargs = T.Dict[str, TYPE_mixed_list]
+    TYPE_mixed = T.Union[str, int, bool, Path, BaseNode]
+    TYPE_mixed_list = T.Union[TYPE_mixed, T.Sequence[TYPE_mixed]]
+    TYPE_mixed_kwargs = T.Dict[str, TYPE_mixed_list]
 
 # Disable all warnings automatically enabled with --trace and friends
 # See https://cmake.org/cmake/help/latest/variable/CMAKE_POLICY_WARNING_CMPNNNN.html
@@ -320,7 +320,7 @@ class ConverterTarget:
                         )
                         continue
                     self.override_options += [f'{i}_std={std}']
-                elif j in ['-fPIC', '-fpic', '-fPIE', '-fpie']:
+                elif j in {'-fPIC', '-fpic', '-fPIE', '-fpie'}:
                     self.pie = True
                 elif isinstance(ctgt, ConverterCustomTarget):
                     # Sometimes projects pass generated source files as compiler
@@ -1173,10 +1173,10 @@ class CMakeInterpreter:
                 src_node = assign(src_var, function('files', sources))
                 tgt_node = assign(tgt_var, function(tgt_func, [tgt_var, id_node(src_var), *generated], tgt_kwargs))
                 node_list += [src_node, tgt_node]
-                if tgt_func in ['static_library', 'shared_library']:
+                if tgt_func in {'static_library', 'shared_library'}:
                     dep_node = assign(dep_var, function('declare_dependency', kwargs=dep_kwargs))
                     node_list += [dep_node]
-                elif tgt_func in ['shared_module']:
+                elif tgt_func == 'shared_module':
                     del dep_kwargs['link_with']
                     dep_node = assign(dep_var, function('declare_dependency', kwargs=dep_kwargs))
                     node_list += [dep_node]

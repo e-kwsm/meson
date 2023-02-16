@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 
 import argparse
@@ -82,7 +83,6 @@ def handle_dirty_opt(msg, allow_dirty: bool):
     else:
         mlog.error(msg + '\n' + 'Use --allow-dirty to ignore the warning and proceed anyway')
         sys.exit(1)
-    return
 
 def process_submodules(src, distdir, options):
     module_file = os.path.join(src, '.gitmodules')

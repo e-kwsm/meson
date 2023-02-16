@@ -209,8 +209,8 @@ class NinjaRule:
             return NinjaCommandArg(c)
 
         self.name = rule
-        self.command = list(map(strToCommandArg, command))  # includes args which never go into a rspfile
-        self.args = list(map(strToCommandArg, args))  # args which will go into a rspfile, if used
+        self.command = [strToCommandArg(c) for c in command]  # includes args which never go into a rspfile
+        self.args = [strToCommandArg(a) for a in args]  # args which will go into a rspfile, if used
         self.description = description
         self.deps = deps  # depstyle 'gcc' or 'msvc'
         self.depfile = depfile
@@ -314,6 +314,7 @@ class NinjaBuildElement:
         self.orderdeps = OrderedSet()
         self.elems = []
         self.all_outputs = all_outputs
+        self.output_errors = ''
 
     def add_dep(self, dep):
         if isinstance(dep, list):
@@ -362,7 +363,8 @@ class NinjaBuildElement:
                 self.rule.refcount += 1
 
     def write(self, outfile):
-        self.check_outputs()
+        if self.output_errors:
+            raise MesonException(self.output_errors)
         ins = ' '.join([ninja_quote(i, True) for i in self.infilenames])
         outs = ' '.join([ninja_quote(i, True) for i in self.outfilenames])
         implicit_outs = ' '.join([ninja_quote(i, True) for i in self.implicit_outfilenames])
@@ -421,7 +423,7 @@ class NinjaBuildElement:
     def check_outputs(self):
         for n in self.outfilenames:
             if n in self.all_outputs:
-                raise MesonException(f'Multiple producers for Ninja target "{n}". Please rename your targets.')
+                self.output_errors = f'Multiple producers for Ninja target "{n}". Please rename your targets.'
             self.all_outputs[n] = True
 
 @dataclass
@@ -510,8 +512,8 @@ class NinjaBackend(backends.Backend):
         for compiler in self.environment.coredata.compilers.host.values():
             # Have to detect the dependency format
 
-            # IFort on windows is MSVC like, but doesn't have /showincludes
-            if compiler.language == 'fortran':
+            # IFort / masm on windows is MSVC like, but doesn't have /showincludes
+            if compiler.language in {'fortran', 'masm'}:
                 continue
             if compiler.id == 'pgi' and mesonlib.is_windows():
                 # for the purpose of this function, PGI doesn't act enough like MSVC
@@ -521,8 +523,9 @@ class NinjaBackend(backends.Backend):
         else:
             # None of our compilers are MSVC, we're done.
             return open(tempfilename, 'a', encoding='utf-8')
+        filebase = 'incdetect.' + compilers.lang_suffixes[compiler.language][0]
         filename = os.path.join(self.environment.get_scratch_dir(),
-                                'incdetect.c')
+                                filebase)
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(dedent('''\
                 #include<stdio.h>
@@ -534,7 +537,7 @@ class NinjaBackend(backends.Backend):
         # Python strings leads to failure. We _must_ do this detection
         # in raw byte mode and write the result in raw bytes.
         pc = subprocess.Popen(compiler.get_exelist() +
-                              ['/showIncludes', '/c', 'incdetect.c'],
+                              ['/showIncludes', '/c', filebase],
                               cwd=self.environment.get_scratch_dir(),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         (stdout, stderr) = pc.communicate()
@@ -1283,6 +1286,7 @@ class NinjaBackend(backends.Backend):
         self.ruledict[rule.name] = rule
 
     def add_build(self, build):
+        build.check_outputs()
         self.build_elements.append(build)
 
         if build.rulename != 'phony':
@@ -1694,11 +1698,11 @@ class NinjaBackend(backends.Backend):
 
         ext = target.get_option(OptionKey('language', machine=target.for_machine, lang='cython'))
 
+        pyx_sources = []  # Keep track of sources we're adding to build
+
         for src in target.get_sources():
             if src.endswith('.pyx'):
                 output = os.path.join(self.get_target_private_dir(target), f'{src}.{ext}')
-                args = args.copy()
-                args += cython.get_output_args(output)
                 element = NinjaBuildElement(
                     self.all_outputs, [output],
                     self.compiler_to_rule_name(cython),
@@ -1707,9 +1711,11 @@ class NinjaBackend(backends.Backend):
                 self.add_build(element)
                 # TODO: introspection?
                 cython_sources.append(output)
+                pyx_sources.append(element)
             else:
                 static_sources[src.rel_to_builddir(self.build_to_src)] = src
 
+        header_deps = []  # Keep track of generated headers for those sources
         for gen in target.get_generated_sources():
             for ssrc in gen.get_outputs():
                 if isinstance(gen, GeneratedList):
@@ -1717,19 +1723,27 @@ class NinjaBackend(backends.Backend):
                 else:
                     ssrc = os.path.join(gen.get_subdir(), ssrc)
                 if ssrc.endswith('.pyx'):
-                    args = args.copy()
                     output = os.path.join(self.get_target_private_dir(target), f'{ssrc}.{ext}')
-                    args += cython.get_output_args(output)
                     element = NinjaBuildElement(
                         self.all_outputs, [output],
                         self.compiler_to_rule_name(cython),
                         [ssrc])
                     element.add_item('ARGS', args)
                     self.add_build(element)
+                    pyx_sources.append(element)
                     # TODO: introspection?
                     cython_sources.append(output)
                 else:
                     generated_sources[ssrc] = mesonlib.File.from_built_file(gen.get_subdir(), ssrc)
+                    # Following logic in L883-900 where we determine whether to add generated source
+                    # as a header(order-only) dep to the .so compilation rule
+                    if not self.environment.is_source(ssrc) and \
+                            not self.environment.is_object(ssrc) and \
+                            not self.environment.is_library(ssrc) and \
+                            not modules.is_module_library(ssrc):
+                        header_deps.append(ssrc)
+        for source in pyx_sources:
+            source.add_orderdep(header_deps)
 
         return static_sources, generated_sources, cython_sources
 
@@ -2125,7 +2139,7 @@ class NinjaBackend(backends.Backend):
         rsp_file_syntax() is only guaranteed to be implemented if
         can_linker_accept_rsp() returns True.
         """
-        options = dict(rspable=tool.can_linker_accept_rsp())
+        options = {'rspable': tool.can_linker_accept_rsp()}
         if options['rspable']:
             options['rspfile_quote_style'] = tool.rsp_file_syntax()
         return options
@@ -2217,9 +2231,18 @@ class NinjaBackend(backends.Backend):
 
     def generate_cython_compile_rules(self, compiler: 'Compiler') -> None:
         rule = self.compiler_to_rule_name(compiler)
-        command = compiler.get_exelist() + ['$ARGS', '$in']
         description = 'Compiling Cython source $in'
-        self.add_rule(NinjaRule(rule, command, [], description, extra='restat = 1'))
+        command = compiler.get_exelist()
+
+        depargs = compiler.get_dependency_gen_args('$out', '$DEPFILE')
+        depfile = '$out.dep' if depargs else None
+
+        args = depargs + ['$ARGS', '$in']
+        args += NinjaCommandArg.list(compiler.get_output_args('$out'), Quoting.none)
+        self.add_rule(NinjaRule(rule, command + args, [],
+                                description,
+                                depfile=depfile,
+                                extra='restat = 1'))
 
     def generate_rust_compile_rules(self, compiler):
         rule = self.compiler_to_rule_name(compiler)
@@ -2384,7 +2407,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
         generator = genlist.get_generator()
         subdir = genlist.subdir
         exe = generator.get_exe()
-        exe_arr = self.build_target_to_cmd_array(exe)
         infilelist = genlist.get_inputs()
         outfilelist = genlist.get_outputs()
         extra_dependencies = self.get_custom_target_depend_files(genlist)
@@ -2412,8 +2434,8 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
             if len(generator.outputs) > 1:
                 outfilelist = outfilelist[len(generator.outputs):]
             args = self.replace_paths(target, args, override_subdir=subdir)
-            cmdlist = exe_arr + self.replace_extra_args(args, genlist)
-            cmdlist, reason = self.as_meson_exe_cmdline(cmdlist[0], cmdlist[1:],
+            cmdlist, reason = self.as_meson_exe_cmdline(exe,
+                                                        self.replace_extra_args(args, genlist),
                                                         capture=outfiles[0] if generator.capture else None)
             abs_pdir = os.path.join(self.environment.get_build_dir(), self.get_target_dir(target))
             os.makedirs(abs_pdir, exist_ok=True)
@@ -2652,7 +2674,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                                              is_generated: bool = False) -> 'ImmutableListProtocol[str]':
         # The code generated by valac is usually crap and has tons of unused
         # variables and such, so disable warnings for Vala C sources.
-        no_warn_args = (is_generated == 'vala')
+        no_warn_args = is_generated == 'vala'
         # Add compiler args and include paths from several sources; defaults,
         # build options, external dependencies, etc.
         commands = self.generate_basic_compiler_args(target, compiler, no_warn_args)
@@ -3331,7 +3353,7 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_scanbuild(self):
         if not environment.detect_scanbuild():
             return
-        if ('', 'scan-build') in self.build.run_target_names:
+        if 'scan-build' in self.all_outputs:
             return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'scanbuild', self.environment.source_dir, self.environment.build_dir] + \
@@ -3351,8 +3373,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
                 not os.path.exists(os.path.join(self.environment.source_dir, '_clang-' + name)):
             return
         if target_name in self.all_outputs:
-            return
-        if ('', target_name) in self.build.run_target_names:
             return
         cmd = self.environment.get_build_command() + \
             ['--internal', 'clang' + name, self.environment.source_dir, self.environment.build_dir] + \
@@ -3377,8 +3397,6 @@ https://gcc.gnu.org/bugzilla/show_bug.cgi?id=47485'''))
     def generate_tags(self, tool, target_name):
         import shutil
         if not shutil.which(tool):
-            return
-        if ('', target_name) in self.build.run_target_names:
             return
         if target_name in self.all_outputs:
             return
@@ -3535,7 +3553,7 @@ def _scan_fortran_file_deps(src: Path, srcdir: Path, dirname: Path, tdeps, compi
                 submodmatch = submodre.match(line)
                 if submodmatch is not None:
                     parents = submodmatch.group(1).lower().split(':')
-                    assert len(parents) in (1, 2), (
+                    assert len(parents) in {1, 2}, (
                         'submodule ancestry must be specified as'
                         f' ancestor:parent but Meson found {parents}')
 

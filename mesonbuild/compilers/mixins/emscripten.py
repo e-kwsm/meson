@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 """Provides a mixin for shared code between C and C++ Emscripten compilers."""
 
@@ -58,14 +59,11 @@ class EmscriptenMixin(Compiler):
             suffix = 'o'
         return os.path.join(dirname, 'output.' + suffix)
 
-    def thread_flags(self, env: 'Environment') -> T.List[str]:
-        return ['-s', 'USE_PTHREADS=1']
-
     def thread_link_flags(self, env: 'Environment') -> T.List[str]:
-        args = ['-s', 'USE_PTHREADS=1']
+        args = ['-pthread']
         count: int = env.coredata.options[OptionKey('thread_count', lang=self.language, machine=self.for_machine)].value
         if count:
-            args.extend(['-s', f'PTHREAD_POOL_SIZE={count}'])
+            args.append(f'-sPTHREAD_POOL_SIZE={count}')
         return args
 
     def get_options(self) -> 'coredata.MutableKeyedOptionDictType':

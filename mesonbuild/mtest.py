@@ -13,6 +13,7 @@
 # limitations under the License.
 
 # A tool to run tests in many different ways.
+from __future__ import annotations
 
 from pathlib import Path
 from collections import deque
@@ -49,6 +50,15 @@ from .mesonlib import (MesonException, OrderedSet, RealPathAction,
 from .mintro import get_infodir, load_info_file
 from .programs import ExternalProgram
 from .backend.backends import TestProtocol, TestSerialisation
+
+if T.TYPE_CHECKING:
+    TYPE_TAPResult = T.Union['TAPParser.Test',
+                             'TAPParser.Error',
+                             'TAPParser.Version',
+                             'TAPParser.Plan',
+                             'TAPParser.UnknownLine',
+                             'TAPParser.Bailout']
+
 
 # GNU autotools interprets a return code of 77 from tests it executes to
 # mean that the test should be skipped.
@@ -271,12 +281,6 @@ class TestResult(enum.Enum):
         return str(self.colorize('>>> '))
 
 
-TYPE_TAPResult = T.Union['TAPParser.Test',
-                         'TAPParser.Error',
-                         'TAPParser.Version',
-                         'TAPParser.Plan',
-                         'TAPParser.Bailout']
-
 class TAPParser:
     class Plan(T.NamedTuple):
         num_tests: int
@@ -298,6 +302,10 @@ class TAPParser:
 
     class Error(T.NamedTuple):
         message: str
+
+    class UnknownLine(T.NamedTuple):
+        message: str
+        lineno: int
 
     class Version(T.NamedTuple):
         version: int
@@ -380,7 +388,7 @@ class TAPParser:
                 self.state = self._MAIN
 
             assert self.state == self._MAIN
-            if line.startswith('#'):
+            if not line or line.startswith('#'):
                 return
 
             m = self._RE_TEST.match(line)
@@ -403,7 +411,7 @@ class TAPParser:
                     yield self.Error('more than one plan found')
                 else:
                     num_tests = int(m.group(1))
-                    skipped = (num_tests == 0)
+                    skipped = num_tests == 0
                     if m.group(2):
                         if m.group(2).upper().startswith('SKIP'):
                             if num_tests > 0:
@@ -434,6 +442,9 @@ class TAPParser:
                 else:
                     yield self.Version(version=self.version)
                 return
+
+            # unknown syntax
+            yield self.UnknownLine(line, self.lineno)
         else:
             # end of file
             if self.state == self._YAML:
@@ -494,7 +505,9 @@ class ConsoleLogger(TestLogger):
         self.progress_task = None          # type: T.Optional[asyncio.Future]
         self.max_left_width = 0            # type: int
         self.stop = False
-        self.update = asyncio.Event()
+        # TODO: before 3.10 this cannot be created immediately, because
+        # it will create a new event loop
+        self.update: asyncio.Event
         self.should_erase_line = ''
         self.test_count = 0
         self.started_tests = 0
@@ -564,7 +577,7 @@ class ConsoleLogger(TestLogger):
 
     def start(self, harness: 'TestHarness') -> None:
         async def report_progress() -> None:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             next_update = 0.0
             self.request_update()
             while not self.stop:
@@ -592,6 +605,7 @@ class ConsoleLogger(TestLogger):
                 self.emit_progress(harness)
             self.flush()
 
+        self.update = asyncio.Event()
         self.test_count = harness.test_count
         self.cols = max(self.cols, harness.max_left_width + 30)
 
@@ -673,6 +687,11 @@ class ConsoleLogger(TestLogger):
                       flush=True)
                 if result.verbose or result.res.is_bad():
                     self.print_log(harness, result)
+            if result.warnings:
+                print(flush=True)
+                for w in result.warnings:
+                    print(w, flush=True)
+                print(flush=True)
             if result.verbose or result.res.is_bad():
                 print(flush=True)
 
@@ -899,6 +918,7 @@ class TestRun:
         self.junit = None      # type: T.Optional[et.ElementTree]
         self.is_parallel = is_parallel
         self.verbose = verbose
+        self.warnings = []     # type: T.List[str]
 
     def start(self, cmd: T.List[str]) -> None:
         self.res = TestResult.RUNNING
@@ -1041,9 +1061,13 @@ class TestRunTAP(TestRun):
 
     async def parse(self, harness: 'TestHarness', lines: T.AsyncIterator[str]) -> None:
         res = None
+        warnings = [] # type: T.List[TAPParser.UnknownLine]
+        version = 12
 
         async for i in TAPParser().parse_async(lines):
-            if isinstance(i, TAPParser.Bailout):
+            if isinstance(i, TAPParser.Version):
+                version = i.version
+            elif isinstance(i, TAPParser.Bailout):
                 res = TestResult.ERROR
                 harness.log_subtest(self, i.message, res)
             elif isinstance(i, TAPParser.Test):
@@ -1051,10 +1075,23 @@ class TestRunTAP(TestRun):
                 if i.result.is_bad():
                     res = TestResult.FAIL
                 harness.log_subtest(self, i.name or f'subtest {i.number}', i.result)
+            elif isinstance(i, TAPParser.UnknownLine):
+                warnings.append(i)
             elif isinstance(i, TAPParser.Error):
                 self.additional_error += 'TAP parsing error: ' + i.message
                 res = TestResult.ERROR
 
+        if warnings:
+            unknown = str(mlog.yellow('UNKNOWN'))
+            width = len(str(max(i.lineno for i in warnings)))
+            for w in warnings:
+                self.warnings.append(f'stdout: {w.lineno:{width}}: {unknown}: {w.message}')
+            if version > 13:
+                self.warnings.append('Unknown TAP output lines have been ignored. Please open a feature request to\n'
+                                     'implement them, or prefix them with a # if they are not TAP syntax.')
+            else:
+                self.warnings.append(str(mlog.red('ERROR')) + ': Unknown TAP output lines for a supported TAP version.\n'
+                                     'This is probably a bug in the test; if they are not TAP syntax, prefix them with a #')
         if all(t.result is TestResult.SKIP for t in self.results):
             # This includes the case where self.results is empty
             res = TestResult.SKIP
@@ -1195,13 +1232,14 @@ async def complete_all(futures: T.Iterable[asyncio.Future],
 
     # Python is silly and does not have a variant of asyncio.wait with an
     # absolute time as deadline.
-    deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
     while futures and (timeout is None or timeout > 0):
         done, futures = await asyncio.wait(futures, timeout=timeout,
                                            return_when=asyncio.FIRST_EXCEPTION)
         check_futures(done)
         if deadline:
-            timeout = deadline - asyncio.get_event_loop().time()
+            timeout = deadline - loop.time()
 
     check_futures(futures)
 
@@ -1213,8 +1251,8 @@ class TestSubprocess:
         self._process = p
         self.stdout = stdout
         self.stderr = stderr
-        self.stdo_task = None            # type: T.Optional[asyncio.Future[str]]
-        self.stde_task = None            # type: T.Optional[asyncio.Future[str]]
+        self.stdo_task: T.Optional[asyncio.Task[None]] = None
+        self.stde_task: T.Optional[asyncio.Task[None]] = None
         self.postwait_fn = postwait_fn   # type: T.Callable[[], None]
         self.all_futures = []            # type: T.List[asyncio.Future]
         self.queue = None                # type: T.Optional[asyncio.Queue[T.Optional[str]]]
@@ -1888,9 +1926,12 @@ class TestHarness:
     def run_tests(self, runners: T.List[SingleTestRunner]) -> None:
         try:
             self.open_logfiles()
-            # Replace with asyncio.run once we can require Python 3.7
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(self._run_tests(runners))
+
+            # TODO: this is the default for python 3.8
+            if sys.platform == 'win32':
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+            asyncio.run(self._run_tests(runners))
         finally:
             self.close_logfiles()
 
@@ -1908,6 +1949,7 @@ class TestHarness:
         running_tests = {}  # type: T.Dict[asyncio.Future, str]
         interrupted = False
         ctrlc_times = deque(maxlen=MAX_CTRLC)  # type: T.Deque[float]
+        loop = asyncio.get_running_loop()
 
         async def run_test(test: SingleTestRunner) -> None:
             async with semaphore:
@@ -1956,7 +1998,7 @@ class TestHarness:
             nonlocal interrupted
             if interrupted:
                 return
-            ctrlc_times.append(asyncio.get_event_loop().time())
+            ctrlc_times.append(loop.time())
             if len(ctrlc_times) == MAX_CTRLC and ctrlc_times[-1] - ctrlc_times[0] < 1:
                 self.flush_logfiles()
                 mlog.warning('CTRL-C detected, exiting')
@@ -1973,10 +2015,10 @@ class TestHarness:
 
         if sys.platform != 'win32':
             if os.getpgid(0) == os.getpid():
-                asyncio.get_event_loop().add_signal_handler(signal.SIGINT, sigint_handler)
+                loop.add_signal_handler(signal.SIGINT, sigint_handler)
             else:
-                asyncio.get_event_loop().add_signal_handler(signal.SIGINT, sigterm_handler)
-            asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, sigterm_handler)
+                loop.add_signal_handler(signal.SIGINT, sigterm_handler)
+            loop.add_signal_handler(signal.SIGTERM, sigterm_handler)
         try:
             for runner in runners:
                 if not runner.is_parallel:
@@ -1993,8 +2035,8 @@ class TestHarness:
             await complete_all(futures)
         finally:
             if sys.platform != 'win32':
-                asyncio.get_event_loop().remove_signal_handler(signal.SIGINT)
-                asyncio.get_event_loop().remove_signal_handler(signal.SIGTERM)
+                loop.remove_signal_handler(signal.SIGINT)
+                loop.remove_signal_handler(signal.SIGTERM)
             for l in self.loggers:
                 await l.finish(self)
 
@@ -2052,10 +2094,6 @@ def run(options: argparse.Namespace) -> int:
 
     if options.wrapper:
         check_bin = options.wrapper[0]
-
-    if sys.platform == 'win32':
-        loop = asyncio.ProactorEventLoop()
-        asyncio.set_event_loop(loop)
 
     if check_bin is not None:
         exe = ExternalProgram(check_bin, silent=True)

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 """Code that creates simple startup projects."""
 
@@ -22,7 +23,7 @@ import sys
 import os
 import re
 from glob import glob
-from mesonbuild import mesonlib
+from mesonbuild import build, mesonlib, mlog
 from mesonbuild.coredata import FORBIDDEN_TARGET_NAMES
 from mesonbuild.environment import detect_ninja
 from mesonbuild.templates.samplefactory import sameple_generator
@@ -97,14 +98,14 @@ def autodetect_options(options: 'argparse.Namespace', sample: bool = False) -> N
             raise SystemExit('No recognizable source files found.\n'
                              'Run meson init in an empty directory to create a sample project.')
         options.srcfiles = srcfiles
-        print("Detected source files: " + ' '.join(map(str, srcfiles)))
+        print("Detected source files: " + ' '.join(str(s) for s in srcfiles))
     options.srcfiles = [Path(f) for f in options.srcfiles]
     if not options.language:
         for f in options.srcfiles:
             if f.suffix == '.c':
                 options.language = 'c'
                 break
-            if f.suffix in ('.cc', '.cpp'):
+            if f.suffix in {'.cc', '.cpp'}:
                 options.language = 'cpp'
                 break
             if f.suffix == '.cs':
@@ -180,10 +181,16 @@ def run(options: 'argparse.Namespace') -> int:
             print('Build directory already exists, deleting it.')
             shutil.rmtree(options.builddir)
         print('Building...')
-        cmd = mesonlib.get_meson_command() + [options.builddir]
+        cmd = mesonlib.get_meson_command() + ['setup', options.builddir]
         ret = subprocess.run(cmd)
         if ret.returncode:
             raise SystemExit
+
+        b = build.load(options.builddir)
+        vsenv_active = mesonlib.setup_vsenv(b.need_vsenv)
+        if vsenv_active:
+            mlog.log(mlog.green('INFO:'), 'automatically activated MSVC compiler environment')
+
         cmd = detect_ninja() + ['-C', options.builddir]
         ret = subprocess.run(cmd)
         if ret.returncode:

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import functools
 import typing as T
@@ -104,7 +105,7 @@ def mpi_factory(env: 'Environment',
 
 class _MPIConfigToolDependency(ConfigToolDependency):
 
-    def _filter_compile_args(self, args: T.Sequence[str]) -> T.List[str]:
+    def _filter_compile_args(self, args: T.List[str]) -> T.List[str]:
         """
         MPI wrappers return a bunch of garbage args.
         Drop -O2 and everything that is not needed.
@@ -128,7 +129,7 @@ class _MPIConfigToolDependency(ConfigToolDependency):
                 result.append(f)
         return result
 
-    def _filter_link_args(self, args: T.Sequence[str]) -> T.List[str]:
+    def _filter_link_args(self, args: T.List[str]) -> T.List[str]:
         """
         MPI wrappers return a bunch of garbage args.
         Drop -O2 and everything that is not needed.
@@ -138,7 +139,7 @@ class _MPIConfigToolDependency(ConfigToolDependency):
         for f in args:
             if self._is_link_arg(f):
                 result.append(f)
-                if f in ('-L', '-Xlinker'):
+                if f in {'-L', '-Xlinker'}:
                     include_next = True
             elif include_next:
                 include_next = False

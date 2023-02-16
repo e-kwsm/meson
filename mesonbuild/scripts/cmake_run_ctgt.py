@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 
 import argparse
 import subprocess
@@ -49,10 +50,10 @@ def run(argsv: T.List[str]) -> int:
         capture_file = ''
 
         for j in i:
-            if j in ['>', '>>']:
+            if j in {'>', '>>'}:
                 stdout = subprocess.PIPE
                 continue
-            elif j in ['&>', '&>>']:
+            elif j in {'&>', '&>>'}:
                 stdout = subprocess.PIPE
                 stderr = subprocess.STDOUT
                 continue

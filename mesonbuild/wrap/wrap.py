@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 from .. import mlog
 import contextlib
@@ -54,7 +55,6 @@ except ImportError:
     has_ssl = False
 
 REQ_TIMEOUT = 600.0
-SSL_WARNING_PRINTED = False
 WHITELIST_SUBDOMAIN = 'wrapdb.mesonbuild.com'
 
 ALL_TYPES = ['file', 'git', 'hg', 'svn']
@@ -95,10 +95,7 @@ def open_wrapdburl(urlstring: str, allow_insecure: bool = False, have_opt: bool 
         raise WrapException(f'SSL module not available in {sys.executable}: Cannot contact the WrapDB.{insecure_msg}')
     else:
         # following code is only for those without Python SSL
-        global SSL_WARNING_PRINTED  # pylint: disable=global-statement
-        if not SSL_WARNING_PRINTED:
-            mlog.warning(f'SSL module not available in {sys.executable}: WrapDB traffic not authenticated.')
-            SSL_WARNING_PRINTED = True
+        mlog.warning(f'SSL module not available in {sys.executable}: WrapDB traffic not authenticated.', once=True)
 
     # If we got this far, allow_insecure was manually passed
     nossl_url = url._replace(scheme='http')
@@ -582,8 +579,11 @@ class Resolver:
                         verbose_git(['fetch', self.wrap.get('url'), revno], self.dirname, check=True)
                         verbose_git(checkout_cmd, self.dirname, check=True)
             else:
-                verbose_git(['-c', 'advice.detachedHead=false', 'clone', *depth_option, '--branch', revno, self.wrap.get('url'),
-                             self.directory], self.subdir_root, check=True)
+                args = ['-c', 'advice.detachedHead=false', 'clone', *depth_option]
+                if revno.lower() != 'head':
+                    args += ['--branch', revno]
+                args += [self.wrap.get('url'), self.directory]
+                verbose_git(args, self.subdir_root, check=True)
             if self.wrap.values.get('clone-recursive', '').lower() == 'true':
                 verbose_git(['submodule', 'update', '--init', '--checkout', '--recursive', *depth_option],
                             self.dirname, check=True)
@@ -613,7 +613,7 @@ class Resolver:
 
     def is_git_full_commit_id(self, revno: str) -> bool:
         result = False
-        if len(revno) in (40, 64): # 40 for sha1, 64 for upcoming sha256
+        if len(revno) in {40, 64}: # 40 for sha1, 64 for upcoming sha256
             result = all(ch in '0123456789AaBbCcDdEeFf' for ch in revno)
         return result
 
@@ -676,7 +676,7 @@ class Resolver:
             except urllib.error.URLError as e:
                 mlog.log(str(e))
                 raise WrapException(f'could not get {urlstring} is the internet available?')
-        with contextlib.closing(resp) as resp:
+        with contextlib.closing(resp) as resp, tmpfile as tmpfile:
             try:
                 dlsize = int(resp.info()['Content-Length'])
             except TypeError:

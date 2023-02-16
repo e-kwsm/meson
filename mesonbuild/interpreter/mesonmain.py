@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2021 The Meson development team
 # Copyright © 2021 Intel Corporation
+from __future__ import annotations
 
 import os
 import typing as T
@@ -37,6 +38,7 @@ if T.TYPE_CHECKING:
 
         skip_if_destdir: bool
         install_tag: str
+        dry_run: bool
 
     class NativeKW(TypedDict):
 
@@ -74,6 +76,7 @@ class MesonMain(MesonInterpreterObject):
                              'override_find_program': self.override_find_program_method,
                              'project_version': self.project_version_method,
                              'project_license': self.project_license_method,
+                             'project_license_files': self.project_license_files_method,
                              'version': self.version_method,
                              'project_name': self.project_name_method,
                              'get_cross_property': self.get_cross_property_method,
@@ -100,7 +103,7 @@ class MesonMain(MesonInterpreterObject):
             largs.append(found)
 
         largs.extend(args)
-        es = self.interpreter.backend.get_executable_serialisation(largs)
+        es = self.interpreter.backend.get_executable_serialisation(largs, verbose=True)
         es.subproject = self.interpreter.subproject
         return es
 
@@ -150,6 +153,7 @@ class MesonMain(MesonInterpreterObject):
         'meson.add_install_script',
         KwargInfo('skip_if_destdir', bool, default=False, since='0.57.0'),
         KwargInfo('install_tag', (str, NoneType), since='0.60.0'),
+        KwargInfo('dry_run', bool, default=False, since='1.1.0'),
     )
     def add_install_script_method(
             self,
@@ -160,6 +164,7 @@ class MesonMain(MesonInterpreterObject):
         script = self._find_source_script('add_install_script', args[0], script_args)
         script.skip_if_destdir = kwargs['skip_if_destdir']
         script.tag = kwargs['install_tag']
+        script.dry_run = kwargs['dry_run']
         self.build.install_scripts.append(script)
 
     @typed_pos_args(
@@ -399,6 +404,12 @@ class MesonMain(MesonInterpreterObject):
     @noKwargs
     def project_license_method(self, args: T.List['TYPE_var'], kwargs: 'TYPE_kwargs') -> T.List[str]:
         return self.build.dep_manifest[self.interpreter.active_projectname].license
+
+    @FeatureNew('meson.project_license_files()', '1.1.0')
+    @noPosargs
+    @noKwargs
+    def project_license_files_method(self, args: T.List[TYPE_var], kwargs: TYPE_kwargs) -> T.List[mesonlib.File]:
+        return [l[1] for l in self.build.dep_manifest[self.interpreter.active_projectname].license_files]
 
     @noPosargs
     @noKwargs

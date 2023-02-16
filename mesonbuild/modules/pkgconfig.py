@@ -193,6 +193,8 @@ class DependenciesHelper:
                     self.add_version_reqs(obj.name, obj.version_reqs)
             elif isinstance(obj, dependencies.InternalDependency):
                 if obj.found():
+                    if obj.objects:
+                        raise mesonlib.MesonException('.pc file cannot refer to individual object files.')
                     processed_libs += obj.get_link_args()
                     processed_cflags += obj.get_compile_args()
                     self._add_lib_dependencies(obj.libraries, obj.whole_libraries, obj.ext_deps, public, private_external_deps=True)
@@ -699,6 +701,9 @@ class PkgConfigModule(NewExtensionModule):
             if mesonlib.is_freebsd():
                 pkgroot = os.path.join(_as_str(state.environment.coredata.get_option(mesonlib.OptionKey('prefix'))), 'libdata', 'pkgconfig')
                 pkgroot_name = os.path.join('{prefix}', 'libdata', 'pkgconfig')
+            elif mesonlib.is_haiku():
+                pkgroot = os.path.join(_as_str(state.environment.coredata.get_option(mesonlib.OptionKey('prefix'))), 'develop', 'lib', 'pkgconfig')
+                pkgroot_name = os.path.join('{prefix}', 'develop', 'lib', 'pkgconfig')
             else:
                 pkgroot = os.path.join(_as_str(state.environment.coredata.get_option(mesonlib.OptionKey('libdir'))), 'pkgconfig')
                 pkgroot_name = os.path.join('{libdir}', 'pkgconfig')

@@ -91,7 +91,6 @@ mod_kwargs -= {'name_prefix', 'name_suffix'}
 class _PythonDependencyBase(_Base):
 
     def __init__(self, python_holder: 'PythonInstallation', embed: bool):
-        self.name = 'python'  # override the name from the "real" dependency lookup
         self.embed = embed
         self.version: str = python_holder.version
         self.platform = python_holder.platform
@@ -194,7 +193,7 @@ class PythonSystemDependency(SystemDependency, _PythonDependencyBase):
                 return None
         elif self.platform == 'win32':
             return '32'
-        elif self.platform in ('win64', 'win-amd64'):
+        elif self.platform in {'win64', 'win-amd64'}:
             return '64'
         mlog.log(f'Unknown Windows Python platform {self.platform!r}')
         return None
@@ -612,7 +611,7 @@ class PythonInstallation(ExternalProgramHolder):
     )
     def install_sources_method(self, args: T.Tuple[T.List[T.Union[str, mesonlib.File]]],
                                kwargs: 'PyInstallKw') -> 'Data':
-        tag = kwargs['install_tag'] or 'runtime'
+        tag = kwargs['install_tag'] or 'python-runtime'
         pure = kwargs['pure'] if kwargs['pure'] is not None else self.pure
         install_dir = self._get_install_dir_impl(pure, kwargs['subdir'])
         return self.interpreter.install_data_impl(
@@ -727,7 +726,7 @@ class PythonModule(ExtensionModule):
             # on various platforms, let's not give up just yet, if an executable
             # named python is available and has a compatible version, let's use
             # it
-            if not python.found() and name_or_path in ['python2', 'python3']:
+            if not python.found() and name_or_path in {'python2', 'python3'}:
                 python = PythonExternalProgram('python')
 
         if python.found():

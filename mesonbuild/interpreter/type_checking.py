@@ -13,10 +13,10 @@ from ..build import (CustomTarget, BuildTarget,
                      BothLibraries, SharedLibrary, StaticLibrary, Jar, Executable)
 from ..coredata import UserFeatureOption
 from ..dependencies import Dependency, InternalDependency
+from ..interpreterbase import FeatureNew
 from ..interpreterbase.decorators import KwargInfo, ContainerTypeInfo
-from ..mesonlib import (
-    File, FileMode, MachineChoice, listify, has_path_sep, OptionKey,
-    EnvInitValueType, EnvironmentVariables)
+from ..mesonlib import (File, FileMode, MachineChoice, listify, has_path_sep,
+                        OptionKey, EnvironmentVariables)
 from ..programs import ExternalProgram
 
 # Helper definition for type checks that are `Optional[T]`
@@ -26,6 +26,11 @@ if T.TYPE_CHECKING:
     from typing_extensions import Literal
 
     from ..interpreterbase import TYPE_var
+    from ..interpreterbase.decorators import FeatureCheckBase
+    from ..mesonlib import EnvInitValueType
+
+    _FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
+
 
 def in_set_validator(choices: T.Set[str]) -> T.Callable[[str], T.Optional[str]]:
     """Check that the choice given was one of the given set."""
@@ -219,8 +224,6 @@ def split_equal_string(input: str) -> T.Tuple[str, str]:
     a, b = input.split('=', 1)
     return (a, b)
 
-_FullEnvInitValueType = T.Union[EnvironmentVariables, T.List[str], T.List[T.List[str]], EnvInitValueType, str, None]
-
 # Split _env_convertor() and env_convertor_with_method() to make mypy happy.
 # It does not want extra arguments in KwargInfo convertor callable.
 def env_convertor_with_method(value: _FullEnvInitValueType,
@@ -373,6 +376,13 @@ INCLUDE_DIRECTORIES: KwargInfo[T.List[T.Union[str, IncludeDirs]]] = KwargInfo(
     default=[],
 )
 
+def include_dir_string_new(val: T.List[T.Union[str, IncludeDirs]]) -> T.Iterable[FeatureCheckBase]:
+    strs = [v for v in val if isinstance(v, str)]
+    if strs:
+        str_msg = ", ".join(f"'{s}'" for s in strs)
+        yield FeatureNew('include_directories kwarg of type string', '1.0.0',
+                         f'Use include_directories({str_msg}) instead')
+
 # for cases like default_options and override_options
 DEFAULT_OPTIONS: KwargInfo[T.List[str]] = KwargInfo(
     'default_options',
@@ -448,3 +458,22 @@ VARIABLES_KW: KwargInfo[T.Dict[str, str]] = KwargInfo(
 )
 
 PRESERVE_PATH_KW: KwargInfo[bool] = KwargInfo('preserve_path', bool, default=False, since='0.63.0')
+
+TEST_KWS: T.List[KwargInfo] = [
+    KwargInfo('args', ContainerTypeInfo(list, (str, File, BuildTarget, CustomTarget, CustomTargetIndex)),
+              listify=True, default=[]),
+    KwargInfo('should_fail', bool, default=False),
+    KwargInfo('timeout', int, default=30),
+    KwargInfo('workdir', (str, NoneType), default=None,
+              validator=lambda x: 'must be an absolute path' if not os.path.isabs(x) else None),
+    KwargInfo('protocol', str,
+              default='exitcode',
+              validator=in_set_validator({'exitcode', 'tap', 'gtest', 'rust'}),
+              since_values={'gtest': '0.55.0', 'rust': '0.57.0'}),
+    KwargInfo('priority', int, default=0, since='0.52.0'),
+    # TODO: env needs reworks of the way the environment variable holder itself works probably
+    ENV_KW,
+    DEPENDS_KW.evolve(since='0.46.0'),
+    KwargInfo('suite', ContainerTypeInfo(list, str), listify=True, default=['']),  # yes, a list of empty string
+    KwargInfo('verbose', bool, default=False, since='0.62.0'),
+]

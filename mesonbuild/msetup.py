@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import typing as T
 import time
@@ -206,10 +207,11 @@ class MesonApp:
         b = build.Build(env)
 
         intr = interpreter.Interpreter(b, user_defined_options=user_defined_options)
-        if env.is_cross_build():
-            logger_fun = mlog.log
-        else:
-            logger_fun = mlog.debug
+        # Super hack because mlog.log and mlog.debug have different signatures,
+        # and there is currently no way to annotate them correctly, unionize them, or
+        # even to write `T.Callable[[*mlog.TV_Loggable], None]`
+        logger_fun = T.cast('T.Callable[[mlog.TV_Loggable, mlog.TV_Loggable], None]',
+                            (mlog.log if env.is_cross_build() else mlog.debug))
         build_machine = intr.builtin['build_machine']
         host_machine = intr.builtin['host_machine']
         target_machine = intr.builtin['target_machine']
@@ -231,6 +233,8 @@ class MesonApp:
         except Exception as e:
             mintro.write_meson_info_file(b, [e])
             raise
+
+        cdf: T.Optional[str] = None
         try:
             dumpfile = os.path.join(env.get_scratch_dir(), 'build.dat')
             # We would like to write coredata as late as possible since we use the existence of
@@ -281,7 +285,7 @@ class MesonApp:
 
         except Exception as e:
             mintro.write_meson_info_file(b, [e])
-            if 'cdf' in locals():
+            if cdf is not None:
                 old_cdf = cdf + '.prev'
                 if os.path.exists(old_cdf):
                     os.replace(old_cdf, cdf)
