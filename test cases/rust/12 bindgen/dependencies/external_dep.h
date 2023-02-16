@@ -1,4 +1,4 @@
-/* SPDX-License-Identifer: Apache-2.0 */
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright © 2022 Intel Corporation */
 
 #include <zlib.h>
