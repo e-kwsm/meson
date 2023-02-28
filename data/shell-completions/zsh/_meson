@@ -153,6 +153,7 @@ local -a meson_commands=(
   '*-D-[set the value of a build option]:build option:__meson_build_options' \
   '--cross-file=[cross-compilation environment description]:cross file:_files' \
   '--native-file=[build machine compilation environment description]:native file:_files' \
+  '--clearcache[clear cached state]' \
   '--fatal-meson-warnings=[exit when any meson warnings are encountered]' \
   '(-v --version)'{'-v','--version'}'[print the meson version and exit]' \
   '--reconfigure=[re-run build configuration]' \
