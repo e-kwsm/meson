@@ -328,8 +328,12 @@ _arguments \
   local curcontext="$curcontext"
   local -a specs=(
     "--rebase[rebase your branch on top of wrap's revision (git only)]"
+    "--reset[Checkout wrap's revision and hard reset to that commit. (git only)]"
     '--sourcedir=[path to source directory]:_directories'
+    '--types[Comma-separated list of subproject types.]:TYPES:_values -s , type all file git hg svn'
+    '--num-processes[How many parallel processes to use]:NUM_PROCESSES'
     '*:subprojects:__meson_installed_wraps'
+    '--allow-insecure[Allow insecure server connections.]'
   )
 _arguments \
   '(: -)'{'--help','-h'}'[show a help message and quit]' \
